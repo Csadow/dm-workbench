@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#203f3b">
+    <meta name="description" content="Кампании, сюжеты и бои. Всё для вашей следующей истории, даже без интернета.">
+    <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="stylesheet" href="./app/styles.css">
+    <title>DM Workbench — мастерская историй</title>
+  </head>
+  <body>
+    <a class="skip" href="#main">К содержимому</a>
+    <div id="app"><main class="loading"><h1>DM Workbench</h1><p>Открываем мастерскую…</p></main></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <dialog id="editor" aria-labelledby="dialog-title"></dialog>
+    <input id="import-file" type="file" accept=".json,.dmw.json,application/json" hidden>
+    <noscript>Для работы приложения включите JavaScript. Данные кампаний сохраняются на этом устройстве.</noscript>
+    <script type="module" src="./app/main.js"></script>
+  </body>
+</html>

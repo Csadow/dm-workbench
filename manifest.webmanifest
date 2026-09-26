@@ -1,0 +1,12 @@
+{
+  "id": "./",
+  "name": "DM Workbench — мастерская историй",
+  "short_name": "DM Workbench",
+  "lang": "ru",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#203f3b",
+  "icons": [{ "src": "./assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
