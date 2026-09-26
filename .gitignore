@@ -1,0 +1,30 @@
+# Локальные настройки инструментов
+.agents/
+.codex/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Секреты и локальная конфигурация
+.env
+.env.*
+!.env.example
+
+# Данные кампаний и резервные копии
+data/
+backups/
+exports/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Сборка и временные файлы
+node_modules/
+dist/
+build/
+coverage/
+*.log
