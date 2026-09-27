@@ -33,12 +33,12 @@ export async function combatChecks({evaluate,click,input,until,submit,screenshot
   c=await campaign();assert.equal(c.battle.combatants.find(p=>p.id===first).hp,15);assert.equal(c.battle.combatants.find(p=>p.id===second).hp,42);
   await click('[data-action="undo-battle"]');await until(`document.querySelector('${row} .health strong').textContent==='42'`,'damage undo');
   assert.equal(await evaluate(`!!document.querySelector('${row} .concentration-warning')`),false);
-  await click(`${row} [data-action="inspect-combatant"]`);await click('[data-action="combat-roll"][data-kind="attack"]');
+  await click(`${row} [data-action="inspect-combatant"]`);await click('[data-action="configure-combat-roll"][data-kind="attack"]');
   await input('[name=mode]','advantage');await input('[name=manual]','4 18');await input('[name=extra]','-2');await submit();
   await until("document.querySelector('.roll-result>b')?.textContent==='22'",'manual advantage calculation');
-  await click('[data-action="combat-roll"][data-kind="save"][data-key="dex"]');await input('[name=manual]','12');await submit();
+  await click('[data-action="configure-combat-roll"][data-kind="save"][data-key="dex"]');await input('[name=manual]','12');await submit();
   await until("document.querySelector('.roll-result>b')?.textContent==='18'",'printed save bonus');
-  await click('[data-action="combat-roll"][data-kind="damage"]');await input('[name=formula]','7');await submit();
+  await click('[data-action="configure-combat-roll"][data-kind="damage"]');await input('[name=formula]','7');await submit();
   await click('[data-action="apply-roll-damage"]');await input('[name=target]',second);await input('[name=scale]','0.5');await submit();
   c=await campaign();assert.equal(c.battle.combatants.find(p=>p.id===second).hp,39,'half damage floors per target');
   await click('[data-action="edit-monster-template"]');await input('[data-attack-editor] [name$="-bonus"]','9');await submit();
@@ -90,6 +90,28 @@ export async function combatChecks({evaluate,click,input,until,submit,screenshot
   await click('.conditional-damage [data-kind="damage"]');assert.equal(await evaluate("document.querySelector('[name=formula]').value"),'1d4');
   assert.match(await evaluate("document.querySelector('.damage-condition').textContent"),/Advantage/);await submit();
   assert.match((await campaign()).battle.rolls.at(-1).label,/дополнительный/);
+  // Every d20 primary button rolls immediately, including missing homebrew
+  // bonuses and the free attack roll; only the separate gear opens settings.
+  for(const [key,bonus] of [['str',-1],['dex',2],['con',0],['int',0],['wis',-1],['cha',-1]]){
+    const r=await quick(`[data-action="quick-combat-roll"][data-kind="ability"][data-key="${key}"]`);
+    assert.ok(r.total>=1+bonus&&r.total<=20+bonus);
+  }
+  await click(`${row} [data-action="inspect-combatant"]`);
+  for(const kind of ['save','ability'])for(const key of ['str','dex','con','int','wis','cha']){
+    const r=await quick(`[data-action="quick-combat-roll"][data-kind="${kind}"][data-key="${key}"]`);
+    const missing=!['dex','con'].includes(key),bonus=key==='dex'?(kind==='save'?6:3):key==='con'?2:0;
+    assert.ok(r.total>=1+bonus&&r.total<=20+bonus);
+    assert.equal(r.label.includes('без бонуса'),missing);
+    if(missing){assert.equal(r.total,r.natural);assert.match(r.detail,/бонус не записан/);}
+  }
+  const rawAttack=await quick('[data-action="quick-combat-roll"][data-kind="attack"][data-key=""]');
+  assert.equal(rawAttack.total,rawAttack.natural);assert.match(rawAttack.label,/без бонуса/);
+  assert.equal((await campaign()).battle.combatants.find(p=>p.id===first).combat.abilities.str.score,null,'unknown stats are not replaced with guessed values');
+  await click('[data-action="configure-combat-roll"][data-kind="save"][data-key="str"]');
+  assert.equal(await evaluate("document.querySelector('#editor').open"),true,'only settings open the calculator');
+  await input('[name=bonus]','5');await input('[name=manual]','12');await submit();
+  assert.equal((await campaign()).battle.rolls.at(-1).total,17);
+  assert.doesNotMatch((await campaign()).battle.rolls.at(-1).label,/без бонуса/);
   await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');await screenshot('dmw-combat-srd-rolls.png');
   assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
   return c.id;

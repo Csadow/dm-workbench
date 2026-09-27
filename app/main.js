@@ -182,7 +182,7 @@ function render() {
   if (!c && view !== 'campaigns' && view !== 'help') view = 'campaigns';
   document.body.classList.toggle('knowledge-mode',view==='knowledge');
   const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, bestiary: () => bestiaryPage(catalog,bestiaryState,catalogError), assistant: () => assistantPage(c,profile,{...aiState(),models:aiModels,error:aiConnectionError,loading:aiChecking}), sound: soundPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
-  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + (isDesktop?' Хранилище':' Данные и установка'), 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${isDesktop?'Файлы на компьютере':offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><div class="topbar-tools">${themeChoice()}<span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></div></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.7.1</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
+  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + (isDesktop?' Хранилище':' Данные и установка'), 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${isDesktop?'Файлы на компьютере':offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><div class="topbar-tools">${themeChoice()}<span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></div></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.7.2</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
   const inspector=$('.combat-inspector');
   if(inspectorScroll && inspector?.dataset.inspected===inspectorScroll.id)inspector.scrollTop=inspectorScroll.top;
 }
@@ -298,12 +298,13 @@ function effectEditor(id) {
 }
 async function saveCombatRoll(p,kind,spec,options={}) {
   const damage=kind==='damage';
-  const result=damage?rollDamage(options.formula??spec.formula,{critical:options.critical}):rollCheck(options.bonus??spec.bonus,options);
+  const missingBonus=!damage && options.bonus==null && spec.bonus===null;
+  const result=damage?rollDamage(options.formula??spec.formula,{critical:options.critical}):rollCheck(options.bonus??spec.bonus??0,options);
   const suffix=damage?(options.critical?' · критический урон':' · урон'):kind==='attack'?(result.natural===20?' · критическое попадание':result.natural===1?' · автоматический промах':''):'';
   const modeLabel=options.mode==='advantage'?' · преимущество':options.mode==='disadvantage'?' · помеха':'';
-  const roll={...result,id:uid(),actor:p.name,label:spec.label+suffix,detail:result.detail+modeLabel,kind:damage?'damage':'check',createdAt:now()};
+  const roll={...result,id:uid(),actor:p.name,label:spec.label+suffix+(missingBonus?' · без бонуса':''),detail:result.detail+modeLabel+(missingBonus?' · бонус не записан, результат только на кости':''),kind:damage?'damage':'check',createdAt:now()};
   await mutate(c=>{c.battle=changeBattle(c.battle,{type:'record-roll',id:p.id,roll,...(kind==='initiative'?{initiative:result.total}:{})});});
-  return `${p.name} · ${spec.label}: ${result.total}`;
+  return `${p.name} · ${spec.label}: ${result.total}${missingBonus?' (без бонуса)':''}`;
 }
 function combatRollEditor(p,kind,key,part='') {
   const spec=combatRollSpec(p,kind,key,part),damage=kind==='damage';let message='';
@@ -314,7 +315,7 @@ function combatRollEditor(p,kind,key,part='') {
 }
 async function quickCombatRoll(p,kind,key='',part='') {
   const spec=combatRollSpec(p,kind,key,part);
-  if(kind==='damage'?!spec.formula||spec.condition:spec.bonus===null){combatRollEditor(p,kind,key,part);return;}
+  if(kind==='damage' && (!spec.formula||spec.condition)){combatRollEditor(p,kind,key,part);return;}
   toast(await saveCombatRoll(p,kind,spec));
 }
 async function combatBestiaryPicker() {
@@ -431,7 +432,7 @@ async function handleAction(el) {
     }
     case 'toggle-concentration': await mutate(c=>{const p=c.battle.combatants.find(p=>p.id===id);c.battle=changeBattle(c.battle,{type:'edit',id,values:{concentration:!p.concentration}});});break;
     case 'concentration-checked': await mutate(c=>{c.battle=changeBattle(c.battle,{type:'edit',id,values:{concentrationChecks:[]}});});break;
-    case 'combat-roll': combatRollEditor(active().battle.combatants.find(p=>p.id===id),el.dataset.kind,el.dataset.key,el.dataset.part||'');break;
+    case 'configure-combat-roll': combatRollEditor(active().battle.combatants.find(p=>p.id===id),el.dataset.kind,el.dataset.key,el.dataset.part||'');break;
     case 'quick-combat-roll': await quickCombatRoll(active().battle.combatants.find(p=>p.id===id),el.dataset.kind,el.dataset.key,el.dataset.part||'');break;
     case 'apply-roll-damage': {
       const roll=active().battle.rolls.find(r=>r.id===id),targets=active().battle.combatants.filter(p=>p.trackHp);

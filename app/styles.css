@@ -2132,3 +2132,4 @@ main:has(.combat-workspace) .combat-toolbar {padding:16px 22px;}
 .conditional-damage {border-left:2px solid var(--warn-border);padding-left:10px;margin-top:10px;}
 .damage-condition {padding:10px;background:var(--warn-soft);border:1px solid var(--warn-border);font-size:13px;}
 @media(max-width:650px){.combat-picker{grid-template-columns:1fr;}#combat-monster-results{max-height:26vh;}}
+.save-grid .roll-control>button:first-child {white-space:normal;flex-wrap:wrap;min-width:0;gap:3px;}
