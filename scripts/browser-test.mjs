@@ -8,7 +8,7 @@ import { createAppServer } from './serve.mjs';
 const temp = await mkdtemp(join(tmpdir(), 'dmw-browser-'));
 const screenshots = process.env.SCREENSHOT_DIR || temp;
 let assistantRequests = [], assistantMode = 'success';
-const server = createAppServer({fetchImpl:async(url,options={})=>{
+const server = createAppServer({vaultRoot:join(temp,'vault'),fetchImpl:async(url,options={})=>{
   if(url.endsWith('/api/tags'))return Response.json({models:[{name:'qwen3.5:4b',size:3400000000,details:{format:'gguf'}}]});
   if(url.endsWith('/api/show'))return Response.json({details:{format:'gguf'},capabilities:['completion','thinking']});
   const body=JSON.parse(options.body);assistantRequests.push(body);
@@ -132,7 +132,30 @@ try {
   const miraId=original.entries[0].id;
   await click(`[data-action="entry"][data-id="${miraId}"]`);
   await click('[data-action="edit-entry"]'); await setValue('[name=ac]','17'); await setValue('[name=maxHp]','35'); await setValue('[name=role]','ally'); await submit();
+  // Inline Markdown, drafts across navigation, wiki links and backlinks.
+  await click('[data-action="note-mode"]');
+  const noteText=await evaluate("document.querySelector('#note-text').value");
+  await setValue('#note-text',noteText+'\n\n## След\n\nПуть ведёт к [[Старый маяк|маяку]]. **Проверить следы.**');
+  await click('[data-view="sessions"]');await click('[data-view="knowledge"]');
+  assert.match(await evaluate("document.querySelector('#note-text').value"),/Проверить следы/);
+  await evaluate("window.originalPut = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function() { this.transaction.abort(); }");
+  await click('[data-action="note-save"]');await waitText('Не удалось сохранить');
+  assert.match(await evaluate("document.querySelector('#note-text').value"),/Проверить следы/);
+  await evaluate("IDBObjectStore.prototype.put = window.originalPut");
+  await command('Input.dispatchKeyEvent',{type:'keyDown',key:'s',code:'KeyS',modifiers:2});
+  await waitText('Заметка сохранена');await click('[data-action="note-mode"]');
+  assert.equal(await evaluate("document.querySelector('.markdown-body strong').textContent"),'Проверить следы.');
+  await click('.wiki-link');assert.equal(await evaluate("document.querySelector('.document-title').textContent"),'Старый маяк');
+  assert.match(await evaluate("document.querySelector('.vault-inspector').textContent"),/Мира Вейл/);
+  await click('[data-action="edit-entry"]');await setValue('[name=folder]','Мир/Побережье');await submit();
+  await click(`[data-action="entry"][data-id="${miraId}"]`);
+  assert.match(await evaluate("document.querySelector('.markdown-body').textContent"),/маяку/);
+  assert.equal(await evaluate("document.querySelector('.wiki-link').dataset.action"),'entry');
   await screenshot('dmw-knowledge.png');
+  await command('Emulation.setDeviceMetricsOverride',{width:1366,height:768,deviceScaleFactor:1,mobile:false});
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'),true);
+  await screenshot('dmw-knowledge-laptop.png');
+  await command('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await click('[data-action="entry-to-combat"]'); await waitText('Участник добавлен в бой');
   await click('[data-view="combat"]');
   assert.equal(await evaluate("document.querySelectorAll('.combatant').length"),3);
@@ -168,11 +191,23 @@ try {
   // testing is separate, to keep CI independent of GPU hardware and downloads.
   await click('[data-view="assistant"]');await waitText('На устройстве: qwen3.5:4b');
   await click('[data-action="ai-settings"]');await setValue('[name=instructions]','Предпочитаю короткие сцены и переговоры.');await submit();
+  await click('[data-action="vault-new"]');await setValue('[name=scope]','shared');await setValue('[name=path]','Мой стиль.md');await setValue('[name=text]','# Мой стиль\n\nПредпочитаю выбор из трёх возможностей.');await submit();
+  await writeFile(join(temp,'vault','shared','Мой стиль.md'),'# Мой стиль\n\nМЕТКА_OBSIDIAN: заканчивай ответ вопросом игрокам.');
   await setValue('#ai-prompt','Что можно предложить Мире?');
   await evaluate("document.querySelector('#ai-form').requestSubmit()");
   await until(()=>evaluate("document.querySelectorAll('.chat-message.assistant').length===1 && !document.querySelector('[data-action=ai-cancel]')"),'assistant reply saved');
   assert.match(assistantRequests[0].messages[0].content,/короткие сцены и переговоры/);
   assert.match(assistantRequests[0].messages[0].content,/Мира Вейл/);
+  assert.match(assistantRequests[0].messages[0].content,/МЕТКА_OBSIDIAN/);
+  const journals=await readdir(join(temp,'vault','campaigns',original.id,'journal'));
+  assert.equal(journals.length,1);assert.match(await readFile(join(temp,'vault','campaigns',original.id,'journal',journals[0]),'utf8'),/Дайте героям выбор/);
+  // A simultaneous external edit leaves the in-app draft and disk version intact.
+  await click('[data-action="vault-edit"]');await setValue('[name=text]','Несохранённая правка приложения');
+  await writeFile(join(temp,'vault','shared','Мой стиль.md'),'МЕТКА_OBSIDIAN: свежая правка в другом редакторе.');
+  await evaluate("document.querySelector('#edit-form').requestSubmit()");
+  await until(()=>evaluate("document.querySelector('#form-error').textContent.includes('Файл изменён')"),'file conflict shown');
+  assert.equal(await evaluate("document.querySelector('[name=text]').value"),'Несохранённая правка приложения');
+  await evaluate("window.confirm=()=>true");await click('[data-action="close"]');
   await click('[data-action="ai-like"]');await waitText('Пример сохранён в памяти стиля');
   await screenshot('dmw-assistant.png');
   await setValue('#ai-prompt','Продолжи с учётом моего стиля.');await evaluate("document.querySelector('#ai-form').requestSubmit()");
@@ -268,6 +303,10 @@ try {
   await command('Emulation.setDeviceMetricsOverride', { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   await screenshot('dmw-laptop.png');
+  await click('[data-view="knowledge"]');await click(`[data-action="entry"][data-id="${miraId}"]`);
+  assert.equal(await evaluate("!!document.querySelector('.wiki-link')"),true);
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'),true);
+  await screenshot('dmw-knowledge-small.png');
   await click('[data-action="campaigns"]');
   await click(`[data-action="archive"][data-id="${original.id}"]`);
   await until(() => evaluate("document.querySelector('.archive')?.textContent.includes('Тайны Тихой гавани')"), 'archive saved');
@@ -282,7 +321,7 @@ try {
   await click('[data-action="next-turn"]'); await until(()=>evaluate("!document.body.classList.contains('saving')"),'migrated save');
   assert.equal(await evaluate("(async()=> (await (await import('./app/storage.js')).openDatabase()).version)()"),3);
   assert.deepEqual(exceptions, []);
-  console.log('PASS: official offline bestiary, assistant context/style/history/errors/cancel, audio playback/mixing/scenes/offline restore, IDB v1 upgrade, timed effects, inline damage, creature transfer, encounter backups, UI creation, isolated campaigns, search/XSS, combat/undo, sessions/journal, keyboard search, failed-write recovery, real export/import, invalid import, concurrent writes, cold offline launch with origin stopped, offline persistence, archive, 1024px layout.');
+  console.log('PASS: Markdown editor/draft recovery/wiki rename/backlinks/offline, live Obsidian memory/journal/conflicts, official offline bestiary, assistant context/style/history/errors/cancel, audio playback/mixing/scenes/offline restore, IDB v1 upgrade, timed effects, inline damage, creature transfer, encounter backups, UI creation, isolated campaigns, search/XSS, combat/undo, sessions/journal, keyboard search, failed-write recovery, real export/import, invalid import, concurrent writes, cold offline launch with origin stopped, offline persistence, archive, 1024px layout.');
   console.log(`Screenshots: ${screenshots}`);
 } catch (error) {
   console.error(error);

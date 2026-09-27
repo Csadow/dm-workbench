@@ -1,4 +1,5 @@
 import { createAssistantHandler } from './local-assistant.mjs';
+import { createMemoryHandler } from './memory-vault.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -9,8 +10,10 @@ const types = { '.json': 'application/json', '.html': 'text/html', '.js': 'text/
 // Serve only application assets, never the repository, local data, or secrets.
 export function createAppServer(options = {}) {
   const assistant = createAssistantHandler(options);
+  const memory = createMemoryHandler(options);
   return createServer(async (req, res) => {
     try {
+      if (await memory(req, res, new URL(req.url, 'http://localhost'))) return;
       if (await assistant(req, res, new URL(req.url, 'http://localhost').pathname)) return;
       const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\//, '') || 'index.html';
       if (!['GET', 'HEAD'].includes(req.method) || path.includes('..') || !/^(index\.html|sw\.js|manifest\.webmanifest|app\/[a-z-]+\.(js|css)|assets\/[a-z0-9-]+\.(svg|png|json))$/.test(path)) {

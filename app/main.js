@@ -1,3 +1,6 @@
+import { memoryKey, memoryState, readMemory, writeMemory, deleteMemory, rememberConversation, retryMemory } from './vault.js';
+import * as knowledge from './knowledge.js';
+import { noteFolder, validFolder, renameWikiLinks, entryMarkdown } from './markdown.js';
 import { bestiaryPage, bestiaryResults, bestiaryReader, monsterEntry } from './bestiary.js';
 import { MAX_PROFILE_BYTES, defaultProfile, buildRequest, chatMessage, memoryRecord, assistantPage, profileExport, profileImport } from './assistant.js';
 import * as screens from './screens.js';
@@ -12,7 +15,7 @@ const dateLabel = value => value ? new Intl.DateTimeFormat('ru', { day: 'numeric
 const fullDate = value => new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 const navItems = [['overview', 'home', 'Обзор'], ['knowledge', 'book', 'База знаний'], ['sessions', 'calendar', 'Сессии'], ['combat', 'sword', 'Бой'], ['journal', 'journal', 'Хроника'], ['sound', 'music', 'Музыка и звуки'], ['bestiary', 'book', 'Бестиарий SRD'], ['assistant', 'spark', 'ИИ-помощник']];
 let campaigns = [], activeId = null, view = 'campaigns', query = '', filter = '', busy = false, dirty = false, offlineReady = false, installPrompt;
-let toastTimer, submitting = false;
+let toastTimer, submitting = false, vaultEditor = null;
 let catalog = null, catalogError = '', catalogLoading = null, profile = defaultProfile();
 const bestiaryState = {query:'',type:'',cr:'',sort:'name',selected:''};
 const aiStates = new Map();
@@ -37,14 +40,16 @@ async function checkAI() {
   aiChecking=true; if(view==='assistant')render();
   try {const response=await fetch('./api/ai/status',{signal:AbortSignal.timeout(7000),cache:'no-store'});const data=await response.json();aiModels=data.models||[];aiConnectionError=data.error||(!aiModels.length?'В Ollama ещё нет локальной текстовой модели.':'');}
   catch{aiModels=[];aiConnectionError='Локальный сервер приложения недоступен. Запустите node scripts/start-local.mjs.';}
-  finally{aiChecking=false;if(view==='assistant')render();}
+  finally{if(activeId)await readMemory(activeId).catch(()=>{});aiChecking=false;if(view==='assistant')render();}
 }
 function refreshAssistant(id) { if(activeId===id && view==='assistant')render(); }
 async function saveAnswer(id) {
   const state=aiState(id);if(!state.answer)return;
   const next=structuredClone(campaigns.find(c=>c.id===id));
   next.assistant.messages=[...next.assistant.messages,state.answer].slice(-100);
+  const answer=state.answer,question=state.draft;
   await persist(next);state.answer=null;state.draft='';state.requestError='';refreshAssistant(id);
+  await rememberConversation(id,question,answer);refreshAssistant(id);
 }
 async function askAssistant(question) {
   const id=activeId,state=aiState(id);
@@ -54,7 +59,8 @@ async function askAssistant(question) {
   const signal=state.controller.signal;refreshAssistant(id);
   try {
     await loadBestiary(); if(signal.aborted)return;
-    const current=campaigns.find(c=>c.id===id), request=buildRequest(current,profile,question,catalog);
+    const files=await readMemory(id);if(signal.aborted)return;
+    const current=campaigns.find(c=>c.id===id), request=buildRequest(current,profile,question,catalog,files);
     const next=structuredClone(current);
     if(next.assistant.messages.at(-1)?.role!=='user'||next.assistant.messages.at(-1)?.text!==question)next.assistant.messages=[...next.assistant.messages,chatMessage('user',question)].slice(-100);
     await persist(next);refreshAssistant(id);if(signal.aborted)return;
@@ -69,10 +75,23 @@ async function askAssistant(question) {
   finally{state.running=false;state.controller=null;refreshAssistant(id);}
 }
 async function updateProfile(fn) {const next=structuredClone(profile);fn(next);profile=await saveProfile(next);render();}
-function downloadText(text,name) {const url=URL.createObjectURL(new Blob([text],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+function downloadText(text,name,type='application/json') {const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
 
 let selected = '', pinnedOnly = false, tagFilter = '', sort = 'recent';
-const knowledgeState = () => ({query, filter, selected, pinnedOnly, tagFilter, sort});
+let noteTabs = [], noteEditing = false;
+let noteDrafts = {};
+try { noteDrafts = JSON.parse(sessionStorage.getItem('dmw-note-drafts') || '{}') || {}; } catch {}
+const draftKey = (id=selected) => `${activeId}:${id}`;
+const currentDraft = () => noteDrafts[draftKey()];
+function storeDrafts() { try { sessionStorage.setItem('dmw-note-drafts',JSON.stringify(noteDrafts)); } catch { toast('Черновик пока только во вкладке. Сохраните заметку кнопкой Ctrl S.',true); } }
+async function saveNote() {
+  const draft=currentDraft(); if(!draft)return;
+  const next=structuredClone(active()),entry=next.entries.find(e=>e.id===selected);
+  if(!entry || entry.text!==draft.base)throw new Error('Исходная заметка изменилась. Скопируйте черновик и сверьте его с сохранённой записью перед заменой.');
+  entry.text=draft.text;entry.updatedAt=now();await persist(next);
+  delete noteDrafts[draftKey()];storeDrafts();render();toast('Заметка сохранена');
+}
+const knowledgeState = () => ({query, filter, selected, pinnedOnly, tagFilter, sort, tabs:noteTabs, editing:noteEditing, draft:currentDraft()});
 const mixer = new SoundMixer(refreshAudio, failure);
 function refreshAudio() {
   const c = active();
@@ -130,8 +149,12 @@ function overviewPage() {
   <div class="overview-grid"><section class="panel session-spotlight"><p class="eyebrow">${session?.status === 'playing' ? 'СЕЙЧАС ЗА СТОЛОМ' : 'СЛЕДУЮЩАЯ СЕССИЯ'}</p><h2>${esc(session?.name || 'Каким будет начало?')}</h2><p class="muted">${session ? dateLabel(session.date) : 'Соберите сцены и нужные материалы в одном месте.'}</p>${session ? `<p class="preline clamp">${esc(session.plan || 'Добавьте план, чтобы не упустить главное.')}</p>` : ''}<div class="actions">${button(session ? 'session' : 'new-session', session ? 'Открыть подготовку ' + icon('arrow') : icon('plus') + ' Подготовить сессию', 'primary', session?.id || '')}${button('go-combat', icon('sword') + ' К бою', 'secondary')}</div></section><section class="panel"><div class="section-title"><h2>Нити сюжета</h2>${button('new-hook', icon('plus') + '<span class=sr-only>Новая зацепка</span>', 'icon-button')}</div>${hooks.slice(0, 4).map(e => `<button class="list-item" data-action="entry" data-id="${e.id}"><span class="dot amber"></span><span><strong>${esc(e.name)}</strong><small>${HOOKS[e.status]}</small></span>${icon('arrow')}</button>`).join('') || '<p class="muted">Добавьте вопрос, тайну или обещание, к которым группа ещё вернётся.</p>'}</section></div>
   <div class="overview-grid"><section class="panel"><div class="section-title"><h2>Последние события</h2>${button('new-event', 'Записать событие', 'text-button')}</div>${eventList(c.events.slice(-3).reverse()) || '<p class="muted">Решения игроков становятся историей здесь.</p>'}</section><section class="panel"><p class="eyebrow">ПОД РУКОЙ</p><h2>Дайте миру детали</h2><p class="muted">Цель персонажа, странная примета места, неожиданный союзник.</p><div class="quick-grid">${button('new-npc', icon('book') + ' Персонаж', 'secondary')}${button('new-location', icon('folder') + ' Место', 'secondary')}${button('new-note', icon('journal') + ' Заметка', 'secondary')}</div></section></div>`;
 }
-function knowledgePage() { return screens.knowledgePage(active(), knowledgeState()); }
-function entriesList() { return screens.entriesList(active(), knowledgeState()); }
+function knowledgePage() {
+  if(!active().entries.some(e=>e.id===selected))selected=active().entries.find(e=>e.pinned)?.id||active().entries[0]?.id||'';
+  if(selected&&!noteTabs.includes(selected))noteTabs=[...noteTabs,selected].slice(-6);
+  return knowledge.knowledgePage(active(), knowledgeState());
+}
+function entriesList() { return knowledge.entriesList(active(), knowledgeState()); }
 function sessionsPage() {
   return `${sectionHead('ПОДГОТОВКА И ИГРА', 'Ваши сессии', 'План — отправная точка. Историю напишет ваша группа.', button('new-session', icon('plus') + ' Новая сессия', 'primary'))}<div class="session-list">${active().sessions.map((s, i) => `<article class="panel session-row"><div class="session-number">${String(i + 1).padStart(2, '0')}</div><div class="grow"><span class="badge">${SESSION_STATUS[s.status]}</span><h2>${esc(s.name)}</h2><p class="muted">${dateLabel(s.date)} · ${s.links.length} связанных материалов</p><p class="clamp">${esc(s.status === 'done' ? s.recap : s.plan)}</p></div>${button('session', 'Открыть ' + icon('arrow'), 'secondary', s.id)}</article>`).join('') || empty('Первая встреча впереди', 'Запишите начало, возможные сцены и вопросы для игроков.', button('new-session', 'Подготовить сессию', 'primary'))}</div>`;
 }
@@ -144,12 +167,13 @@ function journalPage() {
 function combatPage() { return screens.combatPage(active()); }
 function soundPage() { return screens.soundPage(active(), mixer); }
 function render() {
-  if (mixer.campaignId !== (active()?.id || null)) { selected = ''; query = ''; filter = ''; tagFilter = ''; pinnedOnly = false; }
+  if (mixer.campaignId !== (active()?.id || null)) { selected = ''; noteTabs=[]; noteEditing=false; query = ''; filter = ''; tagFilter = ''; pinnedOnly = false; }
   mixer.setCampaign(active());
   const c = active();
   if (!c && view !== 'campaigns' && view !== 'help') view = 'campaigns';
+  document.body.classList.toggle('knowledge-mode',view==='knowledge');
   const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, bestiary: () => bestiaryPage(catalog,bestiaryState,catalogError), assistant: () => assistantPage(c,profile,{...aiState(),models:aiModels,error:aiConnectionError,loading:aiChecking}), sound: soundPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
-  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + ' Данные и установка', 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.3</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
+  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + ' Данные и установка', 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.4</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
 }
 function helpPage() {
   return `${sectionHead('ВАША МАСТЕРСКАЯ', 'Данные и установка', 'Кампании остаются на этом устройстве.')}<div class="overview-grid"><section class="panel"><h2>Работа без интернета</h2><p>Откройте приложение с интернетом и дождитесь сообщения «Готово к работе без сети». После этого заметки, поиск, сессии и бой доступны автономно.</p><p><strong>${offlineReady ? '✓ Приложение готово к работе без сети' : 'Офлайн-подготовка ещё не завершена'}</strong></p>${button('install', 'Установить приложение', 'primary')}<p class="muted">В Chrome или Edge используйте значок установки в адресной строке. Если установка недоступна, работайте в обычной вкладке браузера.</p></section><section class="panel"><h2>Резервная копия</h2><p>Сохраните кампанию в файл после игры. Очистка данных сайта удаляет локальные кампании. Файл экспорта храните отдельно. В него входят загруженные музыка и звуки.</p><p>Импорт добавляет независимую копию. Изменения между устройствами автоматически не объединяются.</p><div class="actions">${active() ? button('export', icon('download') + ' Экспорт кампании', 'primary') : ''}${button('import', icon('upload') + ' Импорт', 'secondary')}</div><hr><p class="muted" id="persistence-status">Можно попросить браузер защитить хранилище от автоматической очистки.</p>${button('persist-storage', 'Защитить локальные данные', 'secondary')}</section></div><section class="panel"><h2>Быстрее с клавиатуры</h2><p><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> — поиск в базе знаний открытой кампании. <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> — сохранить открытый редактор. <kbd>Esc</kbd> — закрыть его; при несохранённых изменениях появится вопрос.</p></section><section class="panel"><h2>Правила и границы прототипа</h2><p>Целевая система — D&D 5.5e (правила 2024 года). Полного справочника правил в прототипе пока нет. В «Бестиарии SRD» доступны 330 готовых существ с исходными английскими блоками характеристик. Инициативу можно бросить кнопкой d20. Эффекты — напоминания до начала указанного раунда; сопротивления, спасброски и эффекты концентрации решает мастер.</p><p>Тексты записей сохраняются кнопкой «Сохранить». Действия боя сохраняются автоматически. До закрытия редактора можно скопировать свой текст, если запись не удалась.</p></section>`;
@@ -185,7 +209,7 @@ function closeDialog() {
   dirty = false; $('#editor').close();
 }
 $('#editor').addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
-window.addEventListener('beforeunload', event => { if (dirty || busy || submitting || [...aiStates.values()].some(s=>s.running||s.answer)) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (dirty || busy || submitting || Object.keys(noteDrafts).length || [...aiStates.values()].some(s=>s.running||s.answer)) { event.preventDefault(); event.returnValue = ''; } });
 function campaignEditor(existing = null) {
   openDialog(existing ? 'Настройки кампании' : 'Новая история', field('Название кампании', 'name', existing?.name, { required: true }) + field('О чём эта история?', 'summary', existing?.summary, { area: true, rows: 4 }) + '<p class="muted tiny">D&D 5.5e · Локальная кампания · Без синхронизации</p>', async data => {
     const name = data.get('name').trim(); if (!name) throw new Error('Введите название кампании.');
@@ -195,18 +219,20 @@ function campaignEditor(existing = null) {
   }, { saveLabel: existing ? 'Сохранить' : 'Создать кампанию' });
 }
 const templates = { npc: 'Цель: \nМанера: \nСекрет: ', location: 'Впечатление: \nОпасность: \nЗацепка: ', hook: 'Вопрос: \nКто вовлечён: \nВозможные последствия: ' };
-function entryEditor(id, type = 'note') {
-  const e = active().entries.find(e => e.id === id); const initial = e || createEntry(type, '', templates[type] || '');
+function entryEditor(id, type = 'note', name = '') {
+  const e = active().entries.find(e => e.id === id); const initial = e || createEntry(type, name, templates[type] || '');
   const backlinks = e ? [
     ...active().entries.filter(x => x.links.includes(e.id)).map(x => button('follow-entry', esc(`${TYPES[x.type]}: ${x.name}`), 'backlink-button', x.id)),
     ...active().sessions.filter(x => x.links.includes(e.id)).map(x => button('follow-session', esc(`Сессия: ${x.name}`), 'backlink-button', x.id)),
     ...active().events.filter(x => x.links.includes(e.id)).map(x => button('follow-event', esc(`Событие: ${x.text.slice(0, 100)}`), 'backlink-button', x.id)),
   ] : [];
-  openDialog(e ? 'Запись базы знаний' : 'Новая запись', field('Название', 'name', initial.name, { required: true }) + `<div class="form-grid">${selectField('Тип', 'type', TYPES, initial.type)}${selectField('Статус зацепки', 'status', HOOKS, initial.status)}</div>` + `<details ${['npc','monster'].includes(initial.type) ? 'open' : ''}><summary>Характеристики для боя (персонажи и существа)</summary><div class="form-grid">${field('Класс доспеха','ac',initial.stats.ac,{type:'number',max:100,required:true})}${field('Максимум HP','maxHp',initial.stats.maxHp,{type:'number',min:1,required:true})}${field('Бонус инициативы','initiativeBonus',initial.stats.initiativeBonus,{type:'number',min:-100,max:100,required:true})}${selectField('Сторона','role',ROLES,initial.stats.role)}${field('Скорость','speed',initial.stats.speed,{maxLength:100})}</div></details>` + field('Текст', 'text', initial.text, { area: true, rows: 8 }) + field('Теги через запятую', 'tags', initial.tags.join(', '), { maxLength: 1000 }) + linksField(initial.links, initial.id) + (backlinks.length ? `<section class="backlinks"><h3>Где упоминается</h3>${backlinks.join('')}</section>` : ''), async data => {
+  openDialog(e ? 'Запись базы знаний' : 'Новая запись', field('Название', 'name', initial.name, { required: true }) + `<div class="form-grid">${selectField('Тип', 'type', TYPES, initial.type)}${selectField('Статус зацепки', 'status', HOOKS, initial.status)}</div>` + `<details ${['npc','monster'].includes(initial.type) ? 'open' : ''}><summary>Характеристики для боя (персонажи и существа)</summary><div class="form-grid">${field('Класс доспеха','ac',initial.stats.ac,{type:'number',max:100,required:true})}${field('Максимум HP','maxHp',initial.stats.maxHp,{type:'number',min:1,required:true})}${field('Бонус инициативы','initiativeBonus',initial.stats.initiativeBonus,{type:'number',min:-100,max:100,required:true})}${selectField('Сторона','role',ROLES,initial.stats.role)}${field('Скорость','speed',initial.stats.speed,{maxLength:100})}</div></details>` + field('Текст', 'text', initial.text, { area: true, rows: 8 }) + field('Папка (например: Мир/Побережье)', 'folder', noteFolder(initial), {maxLength:200}) + field('Теги через запятую', 'tags', initial.tags.join(', '), { maxLength: 1000 }) + linksField(initial.links, initial.id) + (backlinks.length ? `<section class="backlinks"><h3>Где упоминается</h3>${backlinks.join('')}</section>` : ''), async data => {
     const next = structuredClone(active());
-    const updated = { ...initial, stats: {ac:Number(data.get('ac')),maxHp:Number(data.get('maxHp')),initiativeBonus:Number(data.get('initiativeBonus')),role:data.get('role'),speed:data.get('speed')}, name: data.get('name').trim(), type: data.get('type'), status: data.get('status'), text: data.get('text'), tags: [...new Set(data.get('tags').split(',').map(s => s.trim()).filter(Boolean))], links: data.getAll('links'), updatedAt: now() };
+    const updated = { ...initial, stats: {ac:Number(data.get('ac')),maxHp:Number(data.get('maxHp')),initiativeBonus:Number(data.get('initiativeBonus')),role:data.get('role'),speed:data.get('speed')}, folder:data.get('folder').trim(), name: data.get('name').trim(), type: data.get('type'), status: data.get('status'), text: data.get('text'), tags: [...new Set(data.get('tags').split(',').map(s => s.trim()).filter(Boolean))], links: data.getAll('links'), updatedAt: now() };
+    if(!validFolder(updated.folder))throw new Error('Укажите папку через / без пустых частей и служебных символов.');
+    if(e)renameWikiLinks(next,e,updated);
     next.entries = e ? next.entries.map(x => x.id === e.id ? updated : x) : [...next.entries, updated];
-    await persist(next);
+    await persist(next);if(view==='knowledge')selected=updated.id;
   }, { after: e ? button('delete-entry', 'Удалить запись', 'danger-text', e.id) : '' });
 }
 function sessionEditor(id) {
@@ -284,7 +310,12 @@ async function handleAction(el) {
     case 'new-location': entryEditor(null, 'location'); break;
     case 'new-note': entryEditor(null, 'note'); break;
     case 'entry': selected = id; view = 'knowledge'; render(); break;
-    case 'edit-entry': entryEditor(id); break;
+    case 'edit-entry': if(currentDraft())await saveNote(); entryEditor(id); break;
+    case 'wiki-create': entryEditor(null,'note',el.dataset.name.slice(0,200));break;
+    case 'note-mode': noteEditing=!noteEditing;render();break;
+    case 'note-save': await saveNote();break;
+    case 'note-discard': if(confirm('Удалить несохранённый черновик этой заметки?')){delete noteDrafts[draftKey()];storeDrafts();render();}break;
+    case 'note-export': {const e=active().entries.find(x=>x.id===id);downloadText(entryMarkdown(active(),e),e.name.replace(/[\\/:*?"<>|]/g,'-')+'.md','text/markdown');break;}
     case 'pin-entry': await mutate(c => { const e = c.entries.find(e => e.id === id); e.pinned = !e.pinned; }); break;
     case 'jump-event': view = 'journal'; render(); document.getElementById(`event-${id}`)?.scrollIntoView({block:'center'}); break;
     case 'follow-entry': case 'follow-session': case 'follow-event':
@@ -294,7 +325,7 @@ async function handleAction(el) {
       else { view = 'journal'; render(); document.getElementById(`event-${id}`)?.scrollIntoView({ block: 'center' }); }
       break;
     case 'delete-entry':
-      if (confirm('Удалить запись? Ссылки на неё в заметках, сессиях и хронике будут убраны.')) {
+      if (confirm('Удалить запись? Связи в свойствах будут убраны; текстовые [[ссылки]] останутся и будут отмечены как отсутствующие.')) {
         await mutate(c => removeEntry(c, id)); dirty = false; $('#editor').close(); toast('Запись удалена');
       } break;
     case 'new-session': sessionEditor(); break;
@@ -340,6 +371,24 @@ async function handleAction(el) {
       await mutate(c=>{for(let i=0;i<count;i++){const p=fromEntry(entry);if(count>1)p.name=`${entry.name} ${i+1}`;c.battle=changeBattle(c.battle,{type:'add',combatant:p});}});
       toast(`Добавлено в бой: ${count}`);break;
     }
+    case 'vault-refresh': await readMemory(activeId);render();break;
+    case 'vault-retry': await retryMemory(activeId);render();break;
+    case 'vault-journal': {
+      const state=memoryState(activeId);
+      openDialog('Память разговоров',state.files.map((f,i)=>f.path.startsWith('journal/')?button('vault-open-journal',esc(f.path),'backlink-button',memoryKey(f)):'').join('')||'<p>После ответа здесь появится Markdown-файл разговора.</p>',async()=>{}, {saveLabel:'Готово'});break;
+    }
+    case 'vault-new': case 'vault-edit': case 'vault-open-journal': {
+      const campaign=activeId,existing=action==='vault-new'?null:memoryState(campaign).files.find(f=>memoryKey(f)===id);
+      if(action!=='vault-new'&&!existing)throw new Error('Файл больше не найден. Обновите список памяти.');
+      vaultEditor=existing?{campaign,file:structuredClone(existing)}:null;
+      if(action==='vault-open-journal'){$('#editor').close();dirty=false;}
+      openDialog(existing?'Запись Markdown-памяти':'Новая память в Markdown', (existing?`<p class="muted tiny">${esc(existing.scope==='shared'?'Общая память':active().name)} / ${esc(existing.path)}</p>`:selectField('Область памяти','scope',{campaign:'Только эта кампания',shared:'Общий стиль для всех кампаний'},'campaign')+field('Имя файла','path','Предпочтения.md',{required:true,maxLength:200}))+field('Текст Markdown','text',existing?.text||'',{area:true,rows:14,maxLength:80000})+'<p class="muted tiny">До 80 КБ на файл. Изменения в Obsidian будут прочитаны перед следующим ответом. При одновременной правке файл не перезаписывается.</p>',async data=>{await writeMemory(campaign,{scope:existing?.scope||data.get('scope'),path:existing?.path||data.get('path').trim(),text:data.get('text'),revision:existing?.revision??null});},{after:existing?button('vault-delete','Удалить файл','danger-text',id):''});break;
+    }
+    case 'vault-delete': {
+      if(!confirm('Удалить этот Markdown-файл с компьютера?'))break;
+      if(!vaultEditor)throw new Error('Откройте файл заново.');
+      await deleteMemory(vaultEditor.campaign,vaultEditor.file);dirty=false;$('#editor').close();render();break;
+    }
     case 'ai-check': await checkAI();break;
     case 'ai-settings':
       openDialog('Локальная модель и стиль',field('Модель Ollama','model',profile.model,{required:true,maxLength:120})+`<p class="muted tiny">Установлены: ${esc(aiModels.join(', ')||'пока не обнаружены')}. Облачные модели отключены.</p>`+field('Как я веду игру','instructions',profile.instructions,{area:true,rows:7,maxLength:4000})+'<p class="muted tiny">Например: короткие описания, мрачные загадки, решения без боя, последствия выбора игроков. Эти предпочтения общие для всех кампаний.</p>',async data=>{await updateProfile(p=>{p.model=data.get('model').trim();p.instructions=data.get('instructions');});});break;
@@ -358,7 +407,7 @@ async function handleAction(el) {
     case 'ai-save-answer': await saveAnswer(activeId);break;
     case 'ai-clear':
       if(aiState().running||aiState().answer)throw new Error('Сначала остановите запрос и сохраните полученный ответ.');
-      if(confirm('Очистить переписку этой кампании? Память стиля останется.'))await mutate(c=>{c.assistant.messages=[];});break;
+      if(confirm('Очистить переписку этой кампании в браузере? Markdown-файлы разговоров и память стиля останутся; их можно удалить отдельно.'))await mutate(c=>{c.assistant.messages=[];});break;
     case 'ai-use-note': {
       const message=active().assistant.messages.find(m=>m.id===id);
       openDialog('Сохранить предложение помощника',field('Название заметки','name','Идея для сессии',{required:true})+field('Текст','text',message.text,{area:true,rows:10}),async data=>{await mutate(c=>{const e=createEntry('note',data.get('name').trim(),data.get('text'));e.tags=['предложение ИИ'];c.entries.push(e);});});break;
@@ -417,6 +466,7 @@ document.addEventListener('keydown', event => {
   if(busy) return;
   if(view==='combat' && !$('#editor').open && !event.target.closest('input,textarea,select,[contenteditable]') && ['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault(); handleAction({dataset:{action:event.key==='ArrowRight'?'next-turn':'previous-turn'}}).catch(failure);}
   if (!(event.ctrlKey || event.metaKey)) return;
+  if(event.key.toLowerCase()==='s'&&view==='knowledge'&&!$('#editor').open){event.preventDefault();saveNote().catch(failure);}
   if (event.key === 'Enter' && $('#editor').open) { event.preventDefault(); $('#edit-form').requestSubmit(); }
   if (event.key.toLowerCase() === 'k' && active() && !$('#editor').open) {
     event.preventDefault(); view = 'knowledge'; render(); $('#search').focus();
@@ -427,6 +477,13 @@ document.addEventListener('submit',event=>{
   askAssistant($('#ai-prompt').value.trim()).catch(failure);
 });
 document.addEventListener('input', event => {
+  if(event.target.id==='note-text') {
+    const entry=active().entries.find(e=>e.id===selected),previous=currentDraft();
+    if(event.target.value===entry.text)delete noteDrafts[draftKey()];
+    else noteDrafts[draftKey()]={base:previous?.base??entry.text,text:event.target.value};
+    storeDrafts();$('#note-save-status').textContent=currentDraft()?'Черновик · Ctrl S для сохранения':'Сохранено на устройстве';
+  }
+
   if(event.target.id==='monster-search'){bestiaryState.query=event.target.value;$('#monster-list').innerHTML=bestiaryResults(catalog,bestiaryState);}
   if(event.target.id==='ai-prompt')aiState().draft=event.target.value;
   if (event.target.dataset.volume) {

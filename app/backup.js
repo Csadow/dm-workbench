@@ -1,3 +1,4 @@
+import { validFolder } from './markdown.js';
 import { SYSTEM, TYPES, HOOKS, SESSION_STATUS, ROLES, SOUND_KINDS, migrateCampaign, uid, now } from './domain.js';
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
@@ -55,7 +56,7 @@ export function validateCampaign(c) {
   const documents = [c, ...c.assistant.messages, ...c.entries, ...c.sessions, ...c.events, ...c.encounters, ...c.soundboard.tracks, ...c.soundboard.moods];
   unique(documents.map(e => e?.id));
   for (const e of c.entries) {
-    named(e); check(Object.hasOwn(TYPES, e.type), 'неверный тип записи.'); check(Object.hasOwn(HOOKS, e.status), 'неверный статус зацепки.');
+    named(e); if(e.folder!==undefined)check(validFolder(e.folder),'неверная папка заметки.'); check(Object.hasOwn(TYPES, e.type), 'неверный тип записи.'); check(Object.hasOwn(HOOKS, e.status), 'неверный статус зацепки.');
     str(e.text, 'текст'); date(e.updatedAt); array(e.tags, 'теги', 30); e.tags.forEach(t => str(t, 'тег', 100)); refs(e.links, entryIds);
     check(typeof e.pinned === 'boolean', 'неверное закрепление.'); stats(e.stats); str(e.stats.speed, 'скорость', 100);
   }
