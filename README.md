@@ -1,143 +1,117 @@
 # DM Workbench
 
-Автономная мастерская ведущего настольных ролевых игр для компьютера: кампании, база знаний, подготовка сессий, бой и хроника событий.
+**An offline desktop workspace for tabletop game masters, built for Linux.**
 
-**Статус: настольный прототип 0.7.2, Electron / Linux x64.** Целевая система — D&D 5.5e (правила 2024 года). Встроены 330 существ официального SRD 5.2.1. Кампании хранятся на диске: SQLite, Markdown и аудиофайлы. Регистрации и синхронизации нет.
+Plan sessions, manage campaign notes, run combat, and play local audio in one application. Campaigns stay on your device in SQLite, Markdown, and audio files. An optional local AI assistant runs through Ollama.
 
-## Запуск
+[![Checks](https://github.com/Csadow/dm-workbench/actions/workflows/check.yml/badge.svg)](https://github.com/Csadow/dm-workbench/actions/workflows/check.yml)
 
-Готовая сборка: распакуйте `DM-Workbench-0.7.2-linux-x64.tar.gz` и запустите `start.sh`. Node.js для неё не нужен. Приложение открывается отдельным окном и работает без интернета с первого запуска. Windows/macOS пока не проверены.
+[Русское руководство](docs/guide.ru.md) · [Linux operations guide](docs/linux-operations.md) · [CI workflow](.github/workflows/check.yml)
 
-Из исходников нужны Node.js 24+ и pnpm 11:
+**Status:** desktop prototype **0.7.2**, tested on **Linux x64**. The interface is in Russian. Windows and macOS builds have not been validated.
+
+![Campaign knowledge workspace with linked Markdown notes and navigation](docs/images/knowledge-workspace.png)
+
+*Built-in fictional demo data, shown in the browser compatibility mode that shares the desktop interface.*
+
+## What it does
+
+- Keeps multiple campaigns, linked Markdown notes, session plans, and an event journal.
+- Tracks combat initiative, health, conditions, concentration, and undo history.
+- Includes 330 creature stat blocks from the D&D SRD 5.2.1, with attribution in [THIRD_PARTY.md](THIRD_PARTY.md).
+- Mixes local music, ambience, and sound effects.
+- Exports and restores campaign data, notes, audio, and assistant memory.
+- Uses an optional local Ollama model for suggestions grounded in the current campaign. Model weights are downloaded separately.
+
+The desktop application works offline after installation. AI also works offline once its runtime and model are installed. No account or synchronization service is required.
+
+## Engineering highlights
+
+| Area | Implementation | Where to look |
+| --- | --- | --- |
+| Linux packaging | Portable Electron directory and `.tar.gz` build; application files are separate from user data | [Packaging script](scripts/package-desktop.mjs) |
+| Continuous integration | GitHub Actions runs logic, browser, Electron restart, and packaged-binary checks on Ubuntu | [Workflow](.github/workflows/check.yml) |
+| Persistent storage | SQLite plus Markdown/audio files; a journal completes pending file writes after a restart | [Storage](desktop/storage.mjs), [recovery tests](tests/desktop-storage.test.mjs) |
+| Backups | Validated full-library export and restoration into a new folder; automatic backup retention | [Backup implementation](desktop/backup.mjs) |
+| Local services | Loopback-only helper API and optional managed Ollama process | [Runtime lifecycle](scripts/ai-runtime.mjs), [operations guide](docs/linux-operations.md) |
+| Desktop isolation | Sandboxed renderer, context isolation, and a restricted IPC bridge | [Main process](desktop/main.mjs), [preload](desktop/preload.cjs) |
+
+## Run from source
+
+Requirements: **Linux x64**, **Node.js 24+**, **pnpm 11**, and a graphical desktop session.
 
 ```sh
+git clone https://github.com/Csadow/dm-workbench.git
+cd dm-workbench
 pnpm install --frozen-lockfile --ignore-scripts
 node node_modules/electron/install.js
 pnpm start
 ```
 
-Установка зависимостей и Electron требует интернета один раз. Для сборки: `pnpm package:linux`; результат находится в `dist/`. Готовая сборка не содержит кампании и модель ИИ.
+Dependency installation and the Electron download require internet access. Choose **«Открыть пример»** (Open example) for the fictional demo campaign.
 
-По умолчанию данные лежат в `Документы/DM Workbench/`. В разделе **«Хранилище»** можно открыть папку, выбрать другое хранилище, создать или восстановить полную резервную копию. Создайте кампанию или нажмите «Открыть пример».
+The default library is `DM Workbench` in your system Documents directory. The **«Хранилище»** (Storage) screen lets you select another library and create or restore a backup. See the [operations guide](docs/linux-operations.md) for separate test profiles, configuration, and troubleshooting.
 
-Для ИИ выберите **«Скачать ИИ»** (Linux x64, около 4,8 ГБ; нужны `curl`, `tar`, `zstd`) либо подключите уже установленную папку `.local-ai`. После загрузки ответы генерируются без интернета. Запуск из исходников автоматически использует `.local-ai` проекта; готовая сборка хранит движок в своём пользовательском профиле. [Подробности](docs/local-assistant.md).
+### Optional local AI
 
-### Перенос из веб-версии
+Use **«Скачать ИИ»** (Download AI) in the application or connect an existing runtime directory. The download needs `curl`, `tar`, `zstd`, and approximately 4.8 GB of network traffic; installed files require additional disk space. A running local Ollama instance can be reused. [AI setup and limits, in Russian](docs/local-assistant.md).
 
-1. В прежнем браузере сохраните каждую кампанию в JSON, отдельно экспортируйте профиль стиля ИИ.
-2. В настольном приложении откройте «Хранилище» и импортируйте кампании, затем профиль.
-3. Нажмите «Импорт папки памяти» и выберите прежнюю `vault/memory/`. Файлы будут привязаны к импортированным кампаниям; уже существующие файлы не заменяются.
-
-Перенос создаёт независимые копии. Браузерные данные автоматически не извлекаются и не удаляются. Для открытия старой веб-версии: `node scripts/start-local.mjs`, затем **http://127.0.0.1:4173/** в прежнем профиле браузера. Не очищайте данные сайта. [Устройство настольной версии и ограничения](docs/desktop.md).
-
-## Оформление
-
-Тёмная тема включена по умолчанию. В верхней панели выберите **«Тёмная / Светлая / Как в системе»**: выбор сохраняется после перезапуска, открытые черновики остаются на месте. Тема общая для всех экранов, включая базу знаний, формы, бой и звуковую панель. В Electron системный режим также учитывает оформление рабочего стола.
-
-[Как использовать возможности Arch Linux / Hyprland](docs/research/hyprland-arch.md): рабочие пространства, медиаклавиши, звук и режим проведения игры.
-
-## Что уже работает
-
-- Несколько независимых кампаний, переключение, архив и восстановление из архива.
-- Персонажи, существа, места, фракции, зацепки, предметы, заклинания, правила и заметки; теги, ссылки и переходы по обратным ссылкам.
-- Поиск внутри кампании по названию, тексту и тегам; фильтры по типу, тегу и закреплению; дерево папок, вкладки, Markdown-редактор, [[ссылки]], обратные ссылки и карта окружения заметки.
-- Сессии: дата, статус, текстовый план сцен, связанные материалы и отдельные фактические итоги.
-- Хроника событий со связями на записи и сессии.
-- Один текущий бой на кампанию: инициатива, ручной порядок, раунды, здоровье, временные HP, состояния и концентрация.
-- Урон, лечение, предыдущий ход и отмена последних 20 изменений боя; продолжение после закрытия приложения.
-- Файловый экспорт и импорт новой копии с проверкой версии, ID и ссылок. Включает аудиофайлы; лимиты — 5 МБ данных, 60 МБ аудио и 100 МБ на файл импорта. Поддерживается прежний формат резервной копии.
-- Характеристики существ и перенос в бой, броски инициативы, урон с множителями, эффекты с отсчётом раундов и заготовки встреч.
-- Музыка, атмосфера и короткие звуки из локальных файлов: отдельная и общая громкость, повтор, звуковые сцены, панель быстрого запуска во время боя.
-- Бестиарий: 330 официальных блоков SRD 5.2.1, поиск по английским названиям и русским именам части существ, фильтры по типу и CR, добавление нескольких участников в бой.
-- Локальный ИИ через Ollama: подготовка, импровизация, бой, итоги, контекст текущей кампании, сохранение предложений и редактируемая память стиля.
-- Файловая Markdown-память ИИ: общие предпочтения, записи кампании и автоматический журнал разговоров; папка открывается в Obsidian.
-- Защита от незаметной перезаписи при редактировании в нескольких вкладках.
-
-Тексты сохраняются кнопкой **«Сохранить»**, действия боя — сразу. При ошибке записи редактор остаётся открытым. В базе знаний `Ctrl/⌘ + S` сохраняет заметку; черновик остаётся при переходах и перезагрузке этой вкладки. `Ctrl/⌘ + K` открывает поиск в кампании; `Ctrl/⌘ + Enter` сохраняет редактор.
-
-## Заметки и память в Markdown
-
-В базе знаний откройте заметку → «Писать». Поддерживаются заголовки, списки, выделение, цитаты, код и `[[Название|подпись]]`. «Свойства» меняют папку, тип, теги и характеристики.
-
-В настольной версии тексты находятся в `campaigns/<ID>/notes/`. Эту папку можно открыть в Obsidian. Приложение читает внешние правки, переименования, новые файлы и удаления при входе в базу знаний или по кнопке «Обновить записи». Служебное поле `dmw-id` в начале файла сохраняет связь с карточкой. Типы, теги, характеристики, сессии и бой хранятся в SQLite. Это совместимость обычных Markdown-файлов, без плагинов и полной реализации разметки Obsidian.
-
-Память ИИ находится в `memory/shared/` и `memory/campaigns/<ID>/`; новые разговоры записываются в `journal/`. Помощник получает свежую ограниченную выборку, без переобучения весов. Его предложения не становятся событиями мира автоматически.
-
-**Полная резервная копия** включает все кампании, аудио, профиль стиля и Markdown-память. Восстановление создаёт новую папку. При открытии непустого хранилища создаётся одна копия за день, сохраняются последние 14; для защиты от поломки диска храните копию отдельно. Модель ИИ в копию не входит. [Инструкция по заметкам](docs/knowledge-memory.md).
-
-## Музыка и обновление
-
-Откройте «Музыка и звуки» → «Добавить аудио». Укажите название и назначение, выберите файл (до 20 МБ). Для короткого эффекта отключите повтор. Включите музыку и фон, настройте громкость и нажмите «Сохранить звучащую сцену». Звуки остаются на устройстве и входят в резервную копию кампании; после перезапуска запускаются по нажатию. Готовой библиотеки записей в комплекте нет.
-
-Для обновления настольной версии закройте окно и замените папку приложения новой сборкой. Хранилище лежит отдельно. Перед обновлением сохраните полную копию. Для старой веб-версии обновление service worker по-прежнему требует закрытия всех вкладок приложения.
-
-## Проверка
-
-Логика, SQLite, Markdown, восстановление после прерванной записи и резервные копии:
+### Build a portable Linux package
 
 ```sh
-node --test tests/*.test.mjs
+pnpm package:linux
 ```
 
-Сквозная проверка настоящего Electron (отдельный временный профиль, импорт веб-данных, аудио, память и перезапуск):
+The build writes `dist/DM-Workbench-0.7.2-linux-x64/` and its `.tar.gz` archive. Run `./start.sh` inside the unpacked directory. Electron and Node are bundled; campaign data and AI model weights are not. Build from source using the commands above; a downloadable GitHub release is not currently published.
+
+## Verify
 
 ```sh
+# Logic, validation, SQLite, Markdown, recovery, and backup tests
+pnpm test
+
+# Browser regression checks; requires Chromium
+pnpm test:browser
+
+# Real Electron UI, import, backup/restore, and restart checks
 pnpm test:desktop
 ```
 
-Регрессия веб-версии в установленном Chromium:
+If Chromium has another executable name, set it explicitly, for example:
 
 ```sh
-node scripts/browser-test.mjs
+CHROMIUM=google-chrome pnpm test:browser
 ```
 
-Для проверки настоящей установленной модели при работающем Ollama: `node scripts/test-local-ai.mjs`. Браузерный тест в CI использует детерминированный тестовый движок; веса модели в GitHub не загружаются.
+Browser and desktop checks use temporary profiles and deterministic AI responses. The browser runner disables Chromium's sandbox for its isolated local test. The desktop runner requires a graphical session; CI uses Xvfb and an explicit test-only sandbox exception. Normal application startup keeps the renderer sandbox enabled.
 
-При другом имени исполняемого файла задайте `CHROMIUM`, например `CHROMIUM=google-chrome node scripts/browser-test.mjs`. Проверка запускает временный сервер и отдельный профиль браузера, останавливает сервер и проверяет повторный запуск приложения без сети. Профиль очищается после теста; скриншоты сохраняются во временную папку. Также проверяются автономный каталог, история ИИ, память стиля, ошибки и отмена запросов. Браузер теста запускается с `--no-sandbox` только для изолированной проверки на доверенном локальном приложении.
+To check a real installed model with Ollama running:
 
-Проверены Chromium на Linux, ширины окна 1440 и 1024 пикселя. Windows, macOS и другие браузеры пока не проходили практическую проверку. Мобильная версия исключена из текущего объёма по решению владельца.
+```sh
+node scripts/test-local-ai.mjs
+```
 
-## Структура
+The [CI workflow](.github/workflows/check.yml) also builds and checks the standalone Linux binary. This does not test real model response quality or physical disk/power failures.
 
-- `app/main.js` — интерфейс и пользовательские сценарии.
-- `app/screens.js`, `app/ui.js` — экраны и общие элементы интерфейса.
-- `app/bestiary.js`, `assets/srd-monsters.json` — официальный открытый каталог существ.
-- `app/knowledge.js`, `app/markdown.js` — рабочее пространство заметок и безопасное отображение Markdown.
-- `app/vault.js`, `scripts/memory-vault.mjs` — файловая память и локальный API с проверкой версий.
-- `app/assistant.js` — контекст и интерфейс локального помощника, память стиля.
-- `scripts/local-assistant.mjs` — прокси только к локальному Ollama.
-- `app/audio.js` — локальный микшер и проверка аудиофайлов.
-- `app/domain.js` — модель кампании, операции боя, демонстрационные данные.
-- `app/storage.js` — общий интерфейс хранения: настольный IPC или браузерный IndexedDB.
-- `desktop/` — окно Electron, SQLite, файловый журнал записи и полные копии.
-- `app/desktop.js` — управление хранилищем и установкой ИИ.
-- `scripts/package-desktop.mjs` — автономная сборка Linux x64.
-- `app/backup.js` — проверка формата и перенос кампаний.
-- `sw.js` — кеш интерфейса для автономного запуска.
-- `scripts/serve.mjs` — локальная раздача только файлов приложения.
-- `tests/` и `scripts/browser-test.mjs` — проверки.
+## Project layout
 
-При изменении файлов приложения обновляйте версию кеша в `sw.js`. Новая версия ждёт закрытия старых вкладок, чтобы не прерывать игру. Данные кампаний хранятся отдельно от кеша интерфейса.
+```text
+app/          UI, campaign domain, combat, notes, audio, and assistant
+assets/       Icon and attributed SRD creature data
+desktop/      Electron main process, IPC, SQLite, files, and backups
+scripts/      Local services, packaging, and integration checks
+tests/        Node.js tests
+docs/         Operations, architecture, design decisions, and user guides
+.github/      Continuous integration
+```
 
-## Документация
+## Documentation and current limits
 
-- [Настольная версия, хранение и перенос](docs/desktop.md)
-- [Выбор Electron и файлового хранилища](docs/adr/0002-desktop.md)
-- [Заметки, Obsidian и Markdown-память](docs/knowledge-memory.md)
+- [Linux operations guide](docs/linux-operations.md) — processes, configuration, logs, troubleshooting, and backup recovery.
+- [Russian user guide](docs/guide.ru.md) — complete usage instructions, keyboard shortcuts, and browser-to-desktop migration.
+- [Desktop architecture and storage](docs/desktop.md) — Russian.
+- [Why Electron and file-backed storage](docs/adr/0002-desktop.md) — architecture decision, Russian.
+- [Markdown notes and assistant memory](docs/knowledge-memory.md) — Russian.
+- [Third-party data and attribution](THIRD_PARTY.md).
 
-- [Локальный ИИ, установка и память стиля](docs/local-assistant.md)
-- [Источники и лицензия SRD](THIRD_PARTY.md)
-- [Готовность и ограничения прототипа](docs/prototype.md)
-- [Бой, база знаний и звук: VVD, Tracker, Syrinscape](docs/research/combat-knowledge-audio.md)
-- [Исследование семи аналогов](docs/research/tools-comparison.md)
-- [Видение продукта](docs/product.md)
-- [Архитектура](docs/architecture.md)
-- [Автономная работа и кампании](docs/adr/0001-offline-campaigns.md)
-- [План развития](docs/roadmap.md)
-- [Решения](docs/decisions.md)
-
-Исходный код и игровые данные разделены. Секреты, реальные кампании и резервные копии не добавляются в Git. Пример «Тихая гавань» содержит вымышленные авторские материалы.
-
-В 0.7: [свои монстры и обновлённый бой](docs/combat.md). Откройте «Бой → Свой монстр», задайте атаки и сохраните шаблон. Игроки добавляются отдельно; их состояния и концентрация видны в сводке группы.
-
-В 0.7.2: «Бой → Из бестиария» добавляет подкрепление в текущую встречу. Кнопка «Броски» у монстра открывает инициативу, все спасброски, попадание и урон; обычный бросок выполняется сразу, «⚙» открывает настройки. Все d20 бросаются без подтверждения; незаполненный бонус отмечается в результате как «без бонуса».
+This is a local, single-user prototype. Signed installers, automatic updates, cloud synchronization, and validated Windows/macOS packages are not available. Automatic backups are stored on the same disk; keep an independent exported copy for device failure recovery. Real campaign data, local models, and backups are excluded from Git.
