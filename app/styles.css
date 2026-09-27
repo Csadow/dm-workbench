@@ -2045,3 +2045,71 @@ input::placeholder,textarea::placeholder { color:var(--muted); opacity:1; }
 :root { scrollbar-color:var(--scroll) transparent; }
 .brand-icon { color:var(--on-action); }
 @media(max-width:1150px) { .topbar-tools { gap:12px; } .theme-choice>span { display:none; } }
+
+/* Combat desk: the roster stays visible beside the selected creature. */
+.combat-workspace {display:grid;grid-template-columns:minmax(0,1.35fr) minmax(310px,1fr);gap:18px;align-items:start;}
+.combat-roster {min-width:0;}
+.combat-workspace .combatant {padding:16px;gap:12px;flex-wrap:wrap;}
+.combat-workspace .combatant.inspected {box-shadow:inset 3px 0 var(--accent);}
+.combat-workspace .combatant-name {flex:1;min-width:140px;}
+.combat-workspace .health {width:auto;min-width:108px;margin:0;}
+.combat-name-button {background:none;border:0;color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer;overflow-wrap:anywhere;}
+.combat-name-button:hover {color:var(--accent);}
+.combat-status {width:100%;}
+.combat-status:empty {display:none;}
+.combat-workspace .combat-actions {gap:6px;justify-content:flex-start;padding-top:10px;}
+.combat-workspace .combat-actions button {padding:7px 9px;}
+.combat-workspace .combat-actions input {width:70px;}
+.combat-workspace .combat-actions select {width:55px;}
+.combat-inspector {position:sticky;top:18px;max-height:calc(100vh - 40px);overflow:auto;padding:20px;min-width:0;}
+.combat-inspector h2 {font-size:23px;overflow-wrap:anywhere;}
+.combat-inspector h3 {margin:22px 0 10px;}
+.combat-inspector details {font-size:13px;margin:12px 0;}
+.combat-inspector .preline {overflow-wrap:anywhere;}
+.save-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:10px 0;}
+.save-grid button {padding:8px 6px;font-size:12px;}
+.enemy-action {border-top:1px solid var(--line);padding:14px 0;}
+.enemy-action h4 {margin:0 0 5px;font-size:16px;}
+.enemy-action .actions {margin:10px 0;}
+.defense-note {border-left:3px solid var(--info-border);background:var(--info-soft);padding:10px;font-size:13px;margin-top:14px;}
+.effect-badge {background:var(--soft);border:1px solid var(--line);border-radius:8px;max-width:100%;padding:5px 8px;}
+.effect-badge .effect-chip {padding:2px 0;border:0;background:none;}
+.effect-badge small {display:block;font-size:11px;overflow-wrap:anywhere;}
+.effect-badge .effect-chip small {display:inline;}
+.effect-due {border-color:var(--warn-border);background:var(--warn-soft);}
+.condition-note {font-size:13px;white-space:pre-wrap;margin:7px 0;}
+.concentrating {background:var(--info-soft);color:var(--info);border:1px solid var(--info-border);}
+.concentration-warning {background:var(--warn-soft);border:1px solid var(--warn-border);border-radius:8px;padding:10px;display:flex;flex-wrap:wrap;gap:7px;font-size:12px;margin-top:8px;}
+.concentration-warning strong,.concentration-warning span {width:100%;}
+.roll-result {display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line);font-size:12px;}
+.roll-result>div {flex:1;min-width:0;overflow-wrap:anywhere;}
+.roll-result small {display:block;color:var(--muted);margin-top:4px;}
+.roll-result>b {font-size:25px;color:var(--accent);}
+.combat-roll-log {margin-top:18px;}
+.wide-dialog {width:min(850px,calc(100vw - 40px));max-width:850px;}
+.attack-editor {padding:15px;border:1px solid var(--line);border-radius:10px;margin:16px 0;background:var(--soft);}
+.attack-editor legend {padding:0 6px;font-size:13px;color:var(--muted);}
+.profile-abilities {margin:18px 0;}
+.ability-editor {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;}
+.ability-editor .field {font-size:12px;}
+.monster-template h3 {overflow-wrap:anywhere;}
+@media(max-width:1200px){.combat-workspace{grid-template-columns:minmax(0,1fr) minmax(280px,.85fr);gap:12px;}.combat-workspace .combatant{padding:12px;}.combat-inspector{padding:15px;}}
+@media(max-width:1000px){.combat-workspace{grid-template-columns:1fr;}.combat-inspector{position:static;max-height:none;}.combat-workspace .health{margin-left:auto;}}
+main:has(.combat-workspace) {padding-top:22px;}
+main:has(.combat-workspace) .page-heading {margin-bottom:18px;}
+main:has(.combat-workspace) .page-heading h1 {font-size:30px;}
+main:has(.combat-workspace) .combat-toolbar {padding:16px 22px;}
+.combat-workspace .combatants {margin-top:0;}
+.combat-workspace .combatant-name p {letter-spacing:normal;text-transform:none;font-size:11px;}
+.combat-workspace .combat-actions {margin-top:0;}
+.turn-order {display:inline-flex;gap:2px;white-space:nowrap;}
+.party-overview {margin:16px 0 20px;}
+.party-overview h3 {font-size:13px;margin:0 0 8px;color:var(--muted);}
+.party-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;}
+.party-card {background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;overflow-wrap:anywhere;}
+.party-card p {margin:7px 0 0;}
+.party-card small {display:block;color:var(--muted);}
+.party-title {display:flex;justify-content:space-between;gap:8px;align-items:center;}
+.party-title button {padding:0;font-weight:600;}
+.party-concentration {color:var(--info);font-size:11px;}
+.party-due {color:var(--warn);}

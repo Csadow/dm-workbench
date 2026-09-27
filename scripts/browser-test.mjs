@@ -1,3 +1,4 @@
+import { combatChecks } from './combat-checks.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -333,6 +334,8 @@ try {
   assert.equal(await evaluate("document.querySelector('.current .health strong').textContent"),'19');
   await click('[data-action="next-turn"]'); await until(()=>evaluate("!document.body.classList.contains('saving')"),'migrated save');
   assert.equal(await evaluate("(async()=> (await (await import('./app/storage.js')).openDatabase()).version)()"),3);
+  await command('Emulation.setDeviceMetricsOverride', {width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+  await combatChecks({evaluate,click,input:setValue,until:(expression,label)=>until(()=>evaluate(expression),label),submit,screenshot});
   assert.deepEqual(exceptions, []);
   console.log('PASS: Markdown editor/draft recovery/wiki rename/backlinks/offline, live Obsidian memory/journal/conflicts, official offline bestiary, assistant context/style/history/errors/cancel, audio playback/mixing/scenes/offline restore, IDB v1 upgrade, timed effects, inline damage, creature transfer, encounter backups, UI creation, isolated campaigns, search/XSS, combat/undo, sessions/journal, keyboard search, failed-write recovery, real export/import, invalid import, concurrent writes, cold offline launch with origin stopped, offline persistence, archive, 1024px layout.');
   console.log(`Screenshots: ${screenshots}`);

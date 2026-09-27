@@ -36,4 +36,4 @@ jobs:
           DMW_TEST_NO_SANDBOX: '1'
         run: |
           node scripts/package-desktop.mjs
-          DMW_TEST_BINARY="$PWD/dist/DM-Workbench-0.6.0-linux-x64/dm-workbench" xvfb-run -a node scripts/test-desktop.mjs
+          DMW_TEST_BINARY="$PWD/dist/DM-Workbench-0.7.0-linux-x64/dm-workbench" xvfb-run -a node scripts/test-desktop.mjs

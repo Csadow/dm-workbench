@@ -1,3 +1,4 @@
+import { combatFromSRD } from './combat.js';
 import { createEntry } from './domain.js';
 import { esc, icon, button, sectionHead, empty } from './ui.js';
 export const CREATURE_TYPES = {Aberration:'Аберрация',Beast:'Зверь',Celestial:'Небожитель',Construct:'Конструкт',Dragon:'Дракон',Elemental:'Элементаль',Fey:'Фея',Fiend:'Исчадие',Giant:'Великан',Humanoid:'Гуманоид',Monstrosity:'Монстр',Ooze:'Слизь',Plant:'Растение',Undead:'Нежить'};
@@ -18,7 +19,7 @@ export function findMonsters(catalog, state) {
 export function monsterEntry(catalog, monster) {
   const label=russianName(monster);
   const e=createEntry('monster', label?`${label} / ${monster.name}`:monster.name, `${monster.text}\n\nИсточник: SRD ${catalog.version}, стр. ${monster.page}.\n${catalog.source}#page=${monster.page}\n\n${catalog.attribution}`);
-  e.stats={ac:monster.ac,maxHp:monster.hp,initiativeBonus:monster.initiativeBonus,speed:monster.speed,role:'enemy'};
+  e.stats={ac:monster.ac,maxHp:monster.hp,initiativeBonus:monster.initiativeBonus,speed:monster.speed,role:'enemy',combat:combatFromSRD(monster.text)};
   e.tags=['SRD 5.2.1',CREATURE_TYPES[monster.type],`CR ${monster.cr}`];
   return e;
 }

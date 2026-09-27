@@ -1,3 +1,4 @@
+import { combatChecks } from './combat-checks.mjs';
 import assert from 'node:assert/strict';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -28,6 +29,7 @@ export async function runDesktopChecks({win,store,handlers,report}) {
       assert.equal(c.soundboard.tracks.length,1);
       await click(`[data-action="open"][data-id="${c.id}"]`);await click('[data-view="combat"]');
       assert.equal(await evaluate("document.querySelectorAll('.combatant').length"),2);
+      const combat=(await store.listCampaigns()).find(c=>c.name==='Боевой стенд');assert.ok(combat);assert.equal(combat.entries[0].stats.combat.actions[0].bonus,9);assert.equal(combat.battle.combatants[2].effects[0].source,'Паук в проходе');
       await writeFile(report,JSON.stringify({ok:true,phase:'restart'}));return;
     }
     assert.equal(await evaluate('document.documentElement.dataset.theme'),'dark');
@@ -74,10 +76,11 @@ export async function runDesktopChecks({win,store,handlers,report}) {
     await click('[data-action="help"]');await until("!!document.querySelector('[data-action=native-backup]')",'native settings');
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     const image=await win.webContents.capturePage();await writeFile(report+'.png',image.toPNG());
+    await combatChecks({evaluate,click,input,until,submit:async()=>{await evaluate("document.querySelector('#edit-form').requestSubmit()");await until("!document.querySelector('#editor').open",'combat dialog saved');},screenshot:async()=>{const image=await win.webContents.capturePage();await writeFile('/tmp/dmw-desktop-combat.png',image.toPNG());}});
     await theme('light');
     await win.webContents.reload();await until("!!document.querySelector('.campaign-grid')",'theme reload');
     assert.equal(await evaluate('document.documentElement.dataset.theme'),'light');
     assert.equal((await evaluate('indexedDB.databases()')).length,0,'campaigns never written to IndexedDB');
-    await writeFile(report,JSON.stringify({ok:true,phase:'first',campaigns:2,backupBytes:backup.length}));
+    await writeFile(report,JSON.stringify({ok:true,phase:'first',campaigns:3,backupBytes:backup.length}));
   }catch(error){await writeFile(report,JSON.stringify({ok:false,error:error.stack,body:await evaluate('document.body.innerText').catch(()=>''),}));throw error;}
 }

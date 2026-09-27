@@ -1,4 +1,5 @@
 import { validFolder } from './markdown.js';
+import { ABILITIES, parseDice } from './combat.js';
 import { SYSTEM, TYPES, HOOKS, SESSION_STATUS, ROLES, SOUND_KINDS, migrateCampaign, uid, now } from './domain.js';
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
@@ -20,27 +21,47 @@ function stats(value) {
   check(object(value), 'неверные характеристики.'); integer(value.ac, 0, 100); integer(value.maxHp, 1); integer(value.initiativeBonus, -100, 100);
   check(Object.hasOwn(ROLES, value.role), 'неверная роль участника.');
 }
+function combatProfile(value) {
+  check(object(value) && object(value.abilities), 'неверный боевой шаблон.');
+  for (const key of Object.keys(ABILITIES)) {
+    const a=value.abilities[key]; check(object(a), 'неверная характеристика.');
+    if(a.score!==null)integer(a.score,1,30); if(a.save!==null)integer(a.save,-100,100);
+  }
+  str(value.skills,'навыки',2000); str(value.defenses,'защита',4000); array(value.actions,'действия',20);
+  unique(value.actions.map(a=>a?.id));
+  for (const a of value.actions) {
+    named(a); if(a.bonus!==null)integer(a.bonus,-100,100); if(a.saveDc!==null)integer(a.saveDc,0,100);
+    check(Object.hasOwn(ABILITIES,a.saveAbility),'неверная характеристика спасброска.');
+    str(a.damage,'формула урона',100); if(a.damage)parseDice(a.damage);
+    str(a.range,'дальность',200); str(a.notes,'описание действия',10000);
+  }
+}
 function combatants(items) {
   array(items, 'участники', 300);
   const identifiers = [];
   for (const c of items) {
     named(c); stats(c); integer(c.hp, 0, c.maxHp); integer(c.tempHp); integer(c.initiative, -1000, 1000);
+    combatProfile(c.combat); str(c.speed,'скорость',100); check(typeof c.trackHp==='boolean','неверный учёт HP.');
+    array(c.concentrationChecks,'проверки концентрации',1000); c.concentrationChecks.forEach(dc=>integer(dc,10,30));
     str(c.conditions, 'состояния', 1000); str(c.notes, 'боевые заметки'); check(typeof c.concentration === 'boolean', 'неверная концентрация.');
     array(c.effects, 'эффекты', 30); identifiers.push(c.id);
     for (const effect of c.effects) {
       named(effect); identifiers.push(effect.id);
       if (effect.expiresRound !== null) integer(effect.expiresRound, 1, 2000000);
+      str(effect.source,'источник эффекта',200); str(effect.reminder,'напоминание эффекта',1000);
     }
   }
   unique(identifiers);
 }
 function battleState(b) {
   check(object(b), 'неверный бой.'); combatants(b.combatants); integer(b.round, 1, 1000000);
+  array(b.rolls,'журнал бросков',30);
+  for(const r of b.rolls){id(r.id);str(r.actor,'участник броска',200);str(r.label,'бросок',300);str(r.detail,'расчёт',5000);str(r.formula,'формула',100);integer(r.total,-1000000,1000000);date(r.createdAt);check(['check','damage'].includes(r.kind),'неверный вид броска.');}
   check(typeof b.started === 'boolean', 'неверный статус боя.');
   check(b.started ? b.combatants.some(c => c.id === b.activeId) : b.activeId === null, 'неверный текущий участник.');
 }
 export function validateCampaign(c) {
-  named(c); str(c.summary, 'описание'); check(c.schemaVersion === 3, 'неизвестная схема данных.');
+  named(c); str(c.summary, 'описание'); check(c.schemaVersion === 4, 'неизвестная схема данных.');
   check(c.system === SYSTEM && c.rulesSource === 'srd-5.2.1', 'эта версия правил пока не поддерживается.');
   check(typeof c.archived === 'boolean', 'неверный статус архива.'); integer(c.revision, 0, Number.MAX_SAFE_INTEGER);
   date(c.createdAt); date(c.updatedAt);
@@ -59,6 +80,7 @@ export function validateCampaign(c) {
     named(e); if(e.folder!==undefined)check(validFolder(e.folder),'неверная папка заметки.'); check(Object.hasOwn(TYPES, e.type), 'неверный тип записи.'); check(Object.hasOwn(HOOKS, e.status), 'неверный статус зацепки.');
     str(e.text, 'текст'); date(e.updatedAt); array(e.tags, 'теги', 30); e.tags.forEach(t => str(t, 'тег', 100)); refs(e.links, entryIds);
     check(typeof e.pinned === 'boolean', 'неверное закрепление.'); stats(e.stats); str(e.stats.speed, 'скорость', 100);
+    combatProfile(e.stats.combat);
   }
   for (const s of c.sessions) {
     named(s); check(Object.hasOwn(SESSION_STATUS, s.status), 'неверный статус сессии.');
@@ -124,7 +146,7 @@ function checkAssets(c, assets) {
 }
 export function exportCampaign(campaign, assets = []) {
   validateDocument(campaign); checkAssets(campaign, assets);
-  const text = JSON.stringify({ application: 'dm-workbench', formatVersion: 3, exportedAt: now(), campaign, assets }, null, 2);
+  const text = JSON.stringify({ application: 'dm-workbench', formatVersion: 4, exportedAt: now(), campaign, assets }, null, 2);
   check(new TextEncoder().encode(text).length <= MAX_IMPORT_BYTES, 'копия превышает лимит 100 МБ.');
   return text;
 }
@@ -133,9 +155,9 @@ export function importBundle(text) {
   let data;
   try { data = JSON.parse(text); } catch { throw new Error('Не удалось прочитать JSON. Выберите файл экспорта DM Workbench.'); }
   check(object(data) && data.application === 'dm-workbench', 'неизвестный формат.');
-  check([1, 2, 3].includes(data.formatVersion), 'версия формата не поддерживается. Исходные кампании не изменены.');
+  check([1, 2, 3, 4].includes(data.formatVersion), 'версия формата не поддерживается. Исходные кампании не изменены.');
   date(data.exportedAt);
-  const c = data.formatVersion < 3 ? migrateCampaign(data.campaign) : data.campaign;
+  const c = data.formatVersion < 4 ? migrateCampaign(data.campaign) : data.campaign;
   validateDocument(c);
   const assets = checkAssets(c, data.assets || []);
   const ids = new Map();
@@ -148,6 +170,7 @@ export function importBundle(text) {
   }
   for (const state of [c.battle, ...c.battle.history, ...c.encounters]) {
     if (state.id) state.id = remap(state.id);
+    for(const roll of state.rolls || [])roll.id=remap(roll.id);
     for (const combatant of state.combatants) {
       combatant.id = remap(combatant.id);
       for (const effect of combatant.effects) effect.id = remap(effect.id);

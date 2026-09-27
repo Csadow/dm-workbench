@@ -11,7 +11,7 @@ await rm(target,{recursive:true,force:true});await mkdir(target,{recursive:true}
 await cp(dirname(require('electron')),target,{recursive:true});await mkdir(appDir,{recursive:true});
 for(const path of ['app','assets','desktop','index.html','manifest.webmanifest','package.json','THIRD_PARTY.md','README.md','docs'])await cp(join(root,path),join(appDir,path),{recursive:true});
 await mkdir(join(appDir,'scripts'));
-for(const name of ['serve.mjs','local-assistant.mjs','memory-vault.mjs','ai-runtime.mjs','setup-local-ai.mjs','desktop-checks.mjs'])await cp(join(root,'scripts',name),join(appDir,'scripts',name));
+for(const name of ['serve.mjs','local-assistant.mjs','memory-vault.mjs','ai-runtime.mjs','setup-local-ai.mjs','desktop-checks.mjs','combat-checks.mjs'])await cp(join(root,'scripts',name),join(appDir,'scripts',name));
 await rename(join(target,'electron'),join(target,'dm-workbench'));await chmod(join(target,'dm-workbench'),0o755);
 await writeFile(join(target,'start.sh'),'#!/bin/sh\napp_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$app_dir/dm-workbench" "$@"\n',{mode:0o755});
 await writeFile(join(target,'README-RU.txt'),`DM Workbench ${version}\n\nЗапуск: ./start.sh\nДанные по умолчанию: папка «DM Workbench» в Документах.\nДругую папку можно выбрать в разделе «Хранилище».\nДля ИИ используйте установленный Ollama или кнопку загрузки в приложении.\nМодель ИИ в эту сборку не включена. Интернет после её загрузки не нужен.\nДля переноса старых кампаний импортируйте JSON из веб-версии, затем профиль стиля и папку памяти.\n\nСборка для Linux x64. Windows/macOS пока не проверены.\n`);

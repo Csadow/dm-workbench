@@ -38,7 +38,7 @@ test('timed effects survive undo, previous round, and backup with independent ID
   assert.deepEqual(changeBattle(removed,{type:'undo'}),copy.battle);
 });
 test('creature instances and encounter loading preserve templates and protect active combat', () => {
-  const c=demoCampaign(), entry=c.entries[0]; entry.stats={ac:17,maxHp:35,initiativeBonus:3,role:'ally',speed:'30 фт'};
+  const c=demoCampaign(), entry=c.entries[0]; entry.stats={...entry.stats,ac:17,maxHp:35,initiativeBonus:3,role:'ally',speed:'30 фт'};
   const p=fromEntry(entry), q=fromEntry(entry); assert.notEqual(p.id,q.id); assert.equal(p.ac,17); assert.equal(p.notes,entry.text);
   c.battle=changeBattle(c.battle,{type:'add',combatant:p});
   c.battle=changeBattle(c.battle,{type:'damage',id:p.id,amount:10});

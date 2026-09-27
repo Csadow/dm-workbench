@@ -42,14 +42,14 @@ test('assistant context is bounded, isolates campaigns and uses explicit style f
   const restored=profileImport(profileExport(p));assert.deepEqual(restored,p);
   assert.throws(()=>profileImport('{"application":"another"}'));
 });
-test('v2 campaigns migrate without deleting audio; v3 backups remap chat IDs',()=>{
+test('v2 campaigns migrate without deleting audio; v4 backups remap chat IDs',()=>{
   const old=demoCampaign();old.schemaVersion=2;delete old.assistant;
-  const upgraded=migrateCampaign(old);assert.equal(upgraded.schemaVersion,3);assert.deepEqual(upgraded.soundboard,old.soundboard);assert.deepEqual(upgraded.assistant.messages,[]);
+  const upgraded=migrateCampaign(old);assert.equal(upgraded.schemaVersion,4);assert.deepEqual(upgraded.soundboard,old.soundboard);assert.deepEqual(upgraded.assistant.messages,[]);
   upgraded.assistant.messages.push(chatMessage('user','Продолжим'),chatMessage('assistant','Подготовим сцену.','qwen3.5:4b',['К1: Кампания']));
   const copy=importBundle(exportCampaign(upgraded)).campaign;
   assert.notEqual(copy.assistant.messages[0].id,upgraded.assistant.messages[0].id);assert.deepEqual(copy.assistant.messages[1].sources,['К1: Кампания']);
   const envelope=JSON.parse(exportCampaign(upgraded));envelope.formatVersion=2;envelope.campaign=old;
-  assert.equal(importBundle(JSON.stringify(envelope)).campaign.schemaVersion,3);
+  assert.equal(importBundle(JSON.stringify(envelope)).campaign.schemaVersion,4);
 });
 test('local assistant rejects external URLs, cloud models and malformed messages',()=>{
   for(const url of ['https://api.example.com','http://192.168.1.2:11434','http://localhost.evil.com','http://localhost:11434/path','http://user:pass@localhost'])assert.throws(()=>localOllamaUrl(url));

@@ -1,16 +1,17 @@
+import { defaultCombat, combatFromSRD } from './combat.js';
 export const SYSTEM = 'dnd-5.5e-2024';
 export const TYPES = { npc: 'Персонаж', location: 'Место', faction: 'Фракция', hook: 'Зацепка', item: 'Предмет', note: 'Заметка', monster: 'Существо', spell: 'Заклинание', rule: 'Правило' };
 export const ROLES = { hero: 'Герой', ally: 'Союзник', enemy: 'Противник', neutral: 'Нейтральный' };
 export const SOUND_KINDS = { music: 'Музыка', ambience: 'Атмосфера', effect: 'Звуковой эффект' };
-export const defaultStats = () => ({ ac: 10, maxHp: 10, initiativeBonus: 0, speed: '30 фт', role: 'enemy' });
+export const defaultStats = () => ({ ac: 10, maxHp: 10, initiativeBonus: 0, speed: '30 фт', role: 'enemy', combat: defaultCombat() });
 export const emptySoundboard = () => ({ masterVolume: 0.7, tracks: [], moods: [] });
 export const HOOKS = { open: 'Открыта', active: 'Развивается', done: 'Завершена' };
 export const SESSION_STATUS = { planned: 'Готовится', playing: 'Идёт игра', done: 'Завершена' };
 export const uid = () => crypto.randomUUID();
 export const now = () => new Date().toISOString();
-export const emptyBattle = () => ({ combatants: [], round: 1, activeId: null, started: false, history: [] });
+export const emptyBattle = () => ({ combatants: [], round: 1, activeId: null, started: false, history: [], rolls: [] });
 export function createCampaign(name, summary = '') {
-  return { id: uid(), name: name.trim(), summary, system: SYSTEM, rulesSource: 'srd-5.2.1', archived: false, createdAt: now(), updatedAt: now(), revision: 0, schemaVersion: 3, assistant: {messages: []}, encounters: [], soundboard: emptySoundboard(), entries: [], sessions: [], events: [], battle: emptyBattle() };
+  return { id: uid(), name: name.trim(), summary, system: SYSTEM, rulesSource: 'srd-5.2.1', archived: false, createdAt: now(), updatedAt: now(), revision: 0, schemaVersion: 4, assistant: {messages: []}, encounters: [], soundboard: emptySoundboard(), entries: [], sessions: [], events: [], battle: emptyBattle() };
 }
 export function createEntry(type, name, text = '') {
   return { id: uid(), type, name, text, tags: [], links: [], pinned: false, stats: defaultStats(), status: 'open', updatedAt: now() };
@@ -19,7 +20,7 @@ export function createSession(name, date = '') {
   return { id: uid(), name, date, status: 'planned', plan: '', recap: '', links: [] };
 }
 export function createCombatant(name, hp, initiative) {
-  return { id: uid(), name: name.trim(), hp, maxHp: hp, tempHp: 0, initiative, conditions: '', concentration: false, ac: 10, role: 'enemy', initiativeBonus: 0, effects: [], notes: '' };
+  return { id: uid(), name: name.trim(), hp, maxHp: hp, tempHp: 0, initiative, conditions: '', concentration: false, ac: 10, role: 'enemy', initiativeBonus: 0, effects: [], notes: '', speed: '', combat: defaultCombat(), trackHp: true, concentrationChecks: [] };
 }
 export function changeBattle(battle, action) {
   if (action.type === 'undo') {
@@ -32,6 +33,8 @@ export function changeBattle(battle, action) {
   const target = next.combatants.find(c => c.id === action.id);
   switch (action.type) {
     case 'add': next.combatants.push(structuredClone(action.combatant)); break;
+    case 'add-many': next.combatants.push(...structuredClone(action.combatants)); break;
+    case 'record-roll': next.rolls = [...next.rolls.slice(-29), structuredClone(action.roll)]; break;
     case 'start':
       if (!next.combatants.length) return structuredClone(battle);
       next.combatants.sort((a, b) => b.initiative - a.initiative);
@@ -71,6 +74,7 @@ export function changeBattle(battle, action) {
       if (!target || !Number.isSafeInteger(action.amount) || action.amount < 0 || action.amount > 100000) throw new Error('Введите целое число от 0 до 100000.');
       if (action.type === 'heal') target.hp = Math.min(target.maxHp, target.hp + action.amount);
       else {
+        if (target.concentration && action.amount > 0) target.concentrationChecks.push(Math.min(30, Math.max(10, Math.floor(action.amount / 2))));
         const absorbed = Math.min(target.tempHp, action.amount);
         target.tempHp -= absorbed;
         target.hp = Math.max(0, target.hp - (action.amount - absorbed));
@@ -83,18 +87,18 @@ export function changeBattle(battle, action) {
       break;
     case 'effect-add':
       if (!target) return structuredClone(battle);
-      target.effects.push({ id: uid(), name: action.name, expiresRound: action.rounds === null ? null : next.round + action.rounds });
+      target.effects.push({ id: uid(), name: action.name, expiresRound: action.rounds === null ? null : next.round + action.rounds, source: action.source || '', reminder: action.reminder || '' });
       break;
     case 'effect-remove':
       if (!target) return structuredClone(battle);
       target.effects = target.effects.filter(e => e.id !== action.effectId); break;
     case 'load':
       if (next.started) throw new Error('Завершите текущий бой перед загрузкой заготовки.');
-      next.combatants = action.combatants.map(c => ({ ...structuredClone(c), id: uid(), hp: c.maxHp, tempHp: 0, effects: [], concentration: false }));
-      next.round = 1; next.activeId = null; break;
+      next.combatants = action.combatants.map(c => ({ ...structuredClone(c), id: uid(), hp: c.maxHp, tempHp: 0, effects: [], concentration: false, concentrationChecks: [] }));
+      next.round = 1; next.activeId = null; next.rolls = []; break;
     case 'edit':
       if (!target) return structuredClone(battle);
-      Object.assign(target, action.values); break;
+      Object.assign(target, action.values); if (!target.concentration) target.concentrationChecks = []; break;
     case 'clear': return { ...emptyBattle(), history: next.history };
     default: throw new Error('Неизвестное действие боя.');
   }
@@ -127,21 +131,32 @@ export function demoCampaign() {
 // Reading never deletes or overwrites an existing campaign.
 export function migrateCampaign(input) {
   const c = structuredClone(input);
-  if (c.schemaVersion === 3) return c;
-  if (c.schemaVersion === 2) { c.schemaVersion = 3; c.assistant = {messages: []}; return c; }
-  if (c.schemaVersion !== undefined && c.schemaVersion !== 1) throw new Error('Версия данных кампании новее приложения.');
-  c.schemaVersion = 3; c.assistant = {messages: []}; c.encounters = []; c.soundboard = emptySoundboard();
-  for (const e of c.entries) { e.pinned = false; e.stats = defaultStats(); }
-  for (const state of [c.battle, ...c.battle.history]) {
-    for (const p of state.combatants) Object.assign(p, { ac: 10, role: 'enemy', initiativeBonus: 0, effects: [], notes: '' });
+  if (c.schemaVersion === 4) return c;
+  if (![undefined, 1, 2, 3].includes(c.schemaVersion)) throw new Error('Версия данных кампании новее приложения.');
+  if (c.schemaVersion === undefined || c.schemaVersion === 1) {
+    c.assistant = {messages: []}; c.encounters = []; c.soundboard = emptySoundboard();
+    for (const e of c.entries) { e.pinned = false; e.stats = defaultStats(); }
+    for (const state of [c.battle, ...c.battle.history]) {
+      for (const p of state.combatants) Object.assign(p, { ac: 10, role: 'enemy', initiativeBonus: 0, effects: [], notes: '' });
+    }
+  }
+  if (c.schemaVersion === 2) c.assistant = {messages: []};
+  c.schemaVersion = 4;
+  for (const e of c.entries) e.stats.combat ||= combatFromSRD(e.text);
+  for (const state of [c.battle, ...c.battle.history, ...c.encounters]) {
+    if ('round' in state) state.rolls ||= [];
+    for (const p of state.combatants) {
+      p.combat ||= combatFromSRD(p.notes); p.speed ||= ''; p.trackHp ??= true; p.concentrationChecks ||= [];
+      for (const e of p.effects) { e.source ||= ''; e.reminder ||= ''; }
+    }
   }
   return c;
 }
 export function fromEntry(entry) {
-  return { ...createCombatant(entry.name, entry.stats.maxHp, 0), ac: entry.stats.ac, role: entry.stats.role, initiativeBonus: entry.stats.initiativeBonus, notes: entry.text };
+  return { ...createCombatant(entry.name, entry.stats.maxHp, 0), ac: entry.stats.ac, role: entry.stats.role, initiativeBonus: entry.stats.initiativeBonus, notes: entry.text, speed: entry.stats.speed, combat: structuredClone(entry.stats.combat || defaultCombat()) };
 }
 export function createEncounter(name, battle) {
-  return { id: uid(), name: name.trim(), combatants: battle.combatants.map(c => ({ ...structuredClone(c), id: uid(), hp: c.maxHp, tempHp: 0, effects: [], concentration: false })) };
+  return { id: uid(), name: name.trim(), combatants: battle.combatants.map(c => ({ ...structuredClone(c), id: uid(), hp: c.maxHp, tempHp: 0, effects: [], concentration: false, concentrationChecks: [] })) };
 }
 export function d20() {
   const number = new Uint32Array(1);
