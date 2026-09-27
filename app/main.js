@@ -1,15 +1,15 @@
-import { ABILITIES, CONDITIONS, abilityBonus, saveBonus, rollCheck, rollDamage } from './combat.js';
+import { CONDITIONS, combatRollSpec, rollCheck, rollDamage } from './combat.js';
 import { actionFields, profileFields, readProfile } from './combat-ui.js';
 import { isDesktop, nativeInfo, refreshNativeInfo, desktopPage } from './desktop.js';
 import { memoryKey, memoryState, readMemory, writeMemory, deleteMemory, rememberConversation, retryMemory } from './vault.js';
 import * as knowledge from './knowledge.js';
 import { noteFolder, validFolder, renameWikiLinks, entryMarkdown } from './markdown.js';
-import { bestiaryPage, bestiaryResults, bestiaryReader, monsterEntry } from './bestiary.js';
+import { bestiaryPage, bestiaryResults, bestiaryReader, monsterEntry, combatMonsterResults, combatMonsterPreview } from './bestiary.js';
 import { MAX_PROFILE_BYTES, defaultProfile, buildRequest, chatMessage, memoryRecord, assistantPage, profileExport, profileImport } from './assistant.js';
 import * as screens from './screens.js';
 import { SoundMixer, prepareAudio } from './audio.js';
 import { esc, icon, button, sectionHead, empty } from './ui.js';
-import { ROLES, SOUND_KINDS, fromEntry, createEncounter, d20, TYPES, HOOKS, SESSION_STATUS, uid, now, createCampaign, createEntry, createSession, createCombatant, changeBattle, removeEntry, demoCampaign } from './domain.js';
+import { ROLES, SOUND_KINDS, fromEntry, combatantsFromEntry, createEncounter, TYPES, HOOKS, SESSION_STATUS, uid, now, createCampaign, createEntry, createSession, createCombatant, changeBattle, removeEntry, demoCampaign } from './domain.js';
 import { listCampaigns, saveCampaign, loadCampaignBundle, loadProfile, saveProfile } from './storage.js';
 import { exportCampaign, importBundle, encodeAssets, MAX_IMPORT_BYTES } from './backup.js';
 
@@ -20,7 +20,7 @@ const dateLabel = value => value ? new Intl.DateTimeFormat('ru', { day: 'numeric
 const fullDate = value => new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 const navItems = [['overview', 'home', 'Обзор'], ['knowledge', 'book', 'База знаний'], ['sessions', 'calendar', 'Сессии'], ['combat', 'sword', 'Бой'], ['journal', 'journal', 'Хроника'], ['sound', 'music', 'Музыка и звуки'], ['bestiary', 'book', 'Бестиарий SRD'], ['assistant', 'spark', 'ИИ-помощник']];
 let campaigns = [], activeId = null, view = 'campaigns', query = '', filter = '', busy = false, dirty = false, offlineReady = false, installPrompt;
-let inspectedCombatant = null;
+let inspectedCombatant = null, combatPickerState = null;
 let toastTimer, submitting = false, vaultEditor = null;
 let catalog = null, catalogError = '', catalogLoading = null, profile = defaultProfile();
 const bestiaryState = {query:'',type:'',cr:'',sort:'name',selected:''};
@@ -174,13 +174,17 @@ function journalPage() {
 function combatPage() { return screens.combatPage(active(), inspectedCombatant); }
 function soundPage() { return screens.soundPage(active(), mixer); }
 function render() {
+  const oldInspector=view==='combat'?$('.combat-inspector'):null;
+  const inspectorScroll=oldInspector?{id:oldInspector.dataset.inspected,top:oldInspector.scrollTop}:null;
   if (mixer.campaignId !== (active()?.id || null)) { selected = ''; noteTabs=[]; noteEditing=false; query = ''; filter = ''; tagFilter = ''; pinnedOnly = false; }
   mixer.setCampaign(active());
   const c = active();
   if (!c && view !== 'campaigns' && view !== 'help') view = 'campaigns';
   document.body.classList.toggle('knowledge-mode',view==='knowledge');
   const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, bestiary: () => bestiaryPage(catalog,bestiaryState,catalogError), assistant: () => assistantPage(c,profile,{...aiState(),models:aiModels,error:aiConnectionError,loading:aiChecking}), sound: soundPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
-  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + (isDesktop?' Хранилище':' Данные и установка'), 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${isDesktop?'Файлы на компьютере':offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><div class="topbar-tools">${themeChoice()}<span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></div></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.7</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
+  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + (isDesktop?' Хранилище':' Данные и установка'), 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${isDesktop?'Файлы на компьютере':offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><div class="topbar-tools">${themeChoice()}<span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></div></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.7.1</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
+  const inspector=$('.combat-inspector');
+  if(inspectorScroll && inspector?.dataset.inspected===inspectorScroll.id)inspector.scrollTop=inspectorScroll.top;
 }
 function helpPage() {
   if(isDesktop)return desktopPage();
@@ -197,15 +201,15 @@ function linksField(selected = [], exclude = '') {
   const entries = active().entries.filter(e => e.id !== exclude);
   return `<fieldset class="links-field"><legend>Связанные записи</legend>${entries.length ? `<div class="link-options">${entries.map(e => `<label><input type="checkbox" name="links" value="${e.id}" ${selected.includes(e.id) ? 'checked' : ''}><span>${esc(e.name)}</span></label>`).join('')}</div>` : '<p class="muted tiny">Здесь появятся записи из базы знаний.</p>'}</fieldset>`;
 }
-function openDialog(title, content, onSubmit, { saveLabel = 'Сохранить', after = '', wide = false } = {}) {
+function openDialog(title, content, onSubmit, { saveLabel = 'Сохранить', after = '', wide = false, trackDirty = true, successMessage = 'Сохранено на устройстве' } = {}) {
   const dialog = $('#editor'); dirty = false; dialog.classList.toggle('wide-dialog',wide);
   dialog.innerHTML = `<form id="edit-form"><header class="dialog-header"><div><p class="eyebrow">DM WORKBENCH</p><h2 id="dialog-title">${title}</h2></div><button type="button" class="icon-button" data-action="close" aria-label="Закрыть">×</button></header><div class="dialog-body">${content}<p id="form-error" role="alert"></p></div><div class="dialog-footer">${after}<span class="grow"></span>${button('close', 'Отмена', 'secondary')}<button type="submit" class="primary">${saveLabel}</button></div></form>`;
   const form = $('#edit-form');
-  form.addEventListener('input', () => { dirty = true; });
+  form.addEventListener('input', () => { if(trackDirty)dirty = true; });
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (busy || submitting) return;
     const submit = form.querySelector('[type=submit]'); submit.disabled = true; submitting = true;
-    try { await onSubmit(new FormData(form)); dirty = false; dialog.close(); render(); toast('Сохранено на устройстве'); }
+    try { await onSubmit(new FormData(form)); dirty = false; dialog.close(); render(); toast(typeof successMessage==='function'?successMessage():successMessage); }
     catch (error) { failure(error); }
     finally { submit.disabled = false; submitting = false; }
   });
@@ -292,19 +296,38 @@ function monsterTemplateEditor(id,seed=null) {
 function effectEditor(id) {
   openDialog('Состояние участника',`<label class="field">Название<input name="name" required maxlength="200" list="condition-names" placeholder="Выберите или впишите своё"></label><datalist id="condition-names">${Object.keys(CONDITIONS).map(name=>`<option value="${esc(name)}"></option>`).join('')}</datalist>`+field('Источник: кто или что наложило','source','',{maxLength:200})+field('Когда проверить или снять','reminder','',{maxLength:1000})+field('Раундов до напоминания (пусто — бессрочно)','rounds','',{type:'number',min:1,max:10000})+'<p class="muted tiny">Срок отмечается в начале раунда. Эффект снимается вручную. Напоминание может быть, например: «Спасбросок ТЕЛ СЛ 14 в конце хода». Состояния не меняют броски автоматически.</p>',async data=>{await mutate(c=>{c.battle=changeBattle(c.battle,{type:'effect-add',id,name:data.get('name').trim(),source:data.get('source'),reminder:data.get('reminder'),rounds:data.get('rounds')===''?null:Number(data.get('rounds'))});});});
 }
-function combatRollEditor(p,kind,key) {
-  const a=p.combat.actions.find(a=>a.id===key), ability=p.combat.abilities[key];
-  const label=kind==='save'?`Спасбросок ${ABILITIES[key]}`:kind==='ability'?`Проверка ${ABILITIES[key]}`:a?.name;
-  if(!label)throw new Error('Действие больше не существует.');
-  const damage=kind==='damage',bonus=damage?null:kind==='save'?saveBonus(ability):kind==='ability'?abilityBonus(ability.score):a.bonus;
-  const content=damage?field('Формула урона','formula',a.damage,{required:true,maxLength:100})+`<label class="checkbox"><input type="checkbox" name="critical"> Критическое попадание: удвоить только кости</label>`:`<div class="form-grid">${field('Бонус','bonus',bonus,{type:'number',min:-100,max:100,required:true})}${field('Ситуативная поправка','extra',0,{type:'number',min:-100,max:100,required:true})}</div>`+selectField('Как бросаем','mode',{normal:'Обычный бросок',advantage:'С преимуществом',disadvantage:'С помехой'},'normal')+field('Свои кости (пусто — бросить здесь)','manual','',{maxLength:50})+'<p class="muted tiny">Введите значение d20 без бонуса; при преимуществе или помехе — два значения через пробел.</p>';
-  openDialog(`${esc(p.name)} · ${esc(label)}`,content+(a?.notes?`<details><summary>Описание действия</summary><p class="preline">${esc(a.notes)}</p></details>`:''),async data=>{
-    const result=damage?rollDamage(data.get('formula'),{critical:data.has('critical')}):rollCheck(Number(data.get('bonus')),{extra:Number(data.get('extra')),mode:data.get('mode'),manual:data.get('manual')});
-    const suffix=damage?(data.has('critical')?' · критический урон':' · урон'):kind==='attack'?(result.natural===20?' · критическое попадание':result.natural===1?' · автоматический промах':''):'';
-    const modeLabel=damage?'':data.get('mode')==='advantage'?' · преимущество':data.get('mode')==='disadvantage'?' · помеха':'';
-    const roll={...result,id:uid(),actor:p.name,label:label+suffix,detail:result.detail+modeLabel,kind:damage?'damage':'check',createdAt:now()};
-    await mutate(c=>{c.battle=changeBattle(c.battle,{type:'record-roll',roll});});
-  },{saveLabel:damage?'Бросить урон':'Посчитать бросок'});
+async function saveCombatRoll(p,kind,spec,options={}) {
+  const damage=kind==='damage';
+  const result=damage?rollDamage(options.formula??spec.formula,{critical:options.critical}):rollCheck(options.bonus??spec.bonus,options);
+  const suffix=damage?(options.critical?' · критический урон':' · урон'):kind==='attack'?(result.natural===20?' · критическое попадание':result.natural===1?' · автоматический промах':''):'';
+  const modeLabel=options.mode==='advantage'?' · преимущество':options.mode==='disadvantage'?' · помеха':'';
+  const roll={...result,id:uid(),actor:p.name,label:spec.label+suffix,detail:result.detail+modeLabel,kind:damage?'damage':'check',createdAt:now()};
+  await mutate(c=>{c.battle=changeBattle(c.battle,{type:'record-roll',id:p.id,roll,...(kind==='initiative'?{initiative:result.total}:{})});});
+  return `${p.name} · ${spec.label}: ${result.total}`;
+}
+function combatRollEditor(p,kind,key,part='') {
+  const spec=combatRollSpec(p,kind,key,part),damage=kind==='damage';let message='';
+  const content=damage?field('Формула урона','formula',spec.formula,{required:true,maxLength:100})+`<label class="checkbox"><input type="checkbox" name="critical"> Критическое попадание: удвоить только кости</label>`:`<div class="form-grid">${field('Бонус','bonus',spec.bonus??'',{type:'number',min:-100,max:100,required:true})}${field('Ситуативная поправка','extra',0,{type:'number',min:-100,max:100,required:true})}</div>`+selectField('Как бросаем','mode',{normal:'Обычный бросок',advantage:'С преимуществом',disadvantage:'С помехой'},'normal')+field('Свои кости (пусто — бросить здесь)','manual','',{maxLength:50})+'<p class="muted tiny">Введите значение d20 без бонуса; при преимуществе или помехе — два значения через пробел.</p>';
+  openDialog(`${esc(p.name)} · ${esc(spec.label)}`,content+(spec.condition?`<p class="damage-condition">Только при выполнении условия: ${esc(spec.condition)}</p>`:'')+(spec.notes?`<details><summary>Описание действия</summary><p class="preline">${esc(spec.notes)}</p></details>`:''),async data=>{
+    message=await saveCombatRoll(p,kind,spec,damage?{formula:data.get('formula'),critical:data.has('critical')}:{bonus:Number(data.get('bonus')),extra:Number(data.get('extra')),mode:data.get('mode'),manual:data.get('manual')});
+  },{saveLabel:damage?'Бросить урон':'Посчитать бросок',successMessage:()=>message});
+}
+async function quickCombatRoll(p,kind,key='',part='') {
+  const spec=combatRollSpec(p,kind,key,part);
+  if(kind==='damage'?!spec.formula||spec.condition:spec.bonus===null){combatRollEditor(p,kind,key,part);return;}
+  toast(await saveCombatRoll(p,kind,spec));
+}
+async function combatBestiaryPicker() {
+  const campaignId=activeId;
+  const data=await loadBestiary();if(!data)throw new Error(catalogError);
+  if(activeId!==campaignId||view!=='combat')return;
+  const state={query:'',selected:'',sort:'name'};combatPickerState=state;
+  openDialog('Добавить монстров из бестиария',`<label class="field">Поиск<input id="combat-monster-search" type="search" placeholder="Гоблин, скелет, dragon…"></label><div class="combat-picker"><div id="combat-monster-results">${combatMonsterResults(data,state)}</div><section><div id="combat-monster-preview">${combatMonsterPreview(data,state)}</div>${field('Количество','quantity',1,{type:'number',min:1,max:20,required:true})}<p class="muted tiny">Текущий ход, HP и состояния сохранятся. Новые участники появятся в конце очереди; инициативу можно бросить и отсортировать после добавления.</p></section></div>`,async form=>{
+    const monster=data.monsters.find(m=>m.id===state.selected);if(!monster)throw new Error('Выберите монстра.');
+    const group=combatantsFromEntry(monsterEntry(data,monster),Number(form.get('quantity')),active().battle);
+    await mutate(c=>{c.battle=changeBattle(c.battle,{type:'add-many',combatants:group});});inspectedCombatant=group[0].id;
+  },{wide:true,trackDirty:false,saveLabel:'Добавить в текущий бой',successMessage:'Монстры добавлены в текущий бой'});
+  $('#edit-form [type=submit]').disabled=true;
 }
 function healthEditor(id, type) {
   const c = active().battle.combatants.find(c => c.id === id);
@@ -379,7 +402,7 @@ async function handleAction(el) {
     case 'new-event': eventEditor(); break;
     case 'new-combatant': combatantEditor(); break;
     case 'new-player': playerEditor(); break;
-    case 'inspect-combatant': inspectedCombatant=id; render(); break;
+    case 'inspect-combatant': inspectedCombatant=id; render(); if(matchMedia('(max-width:1000px)').matches)$('.combat-inspector').scrollIntoView({block:'start'});break;
     case 'new-monster-template': monsterTemplateEditor(); break;
     case 'edit-monster-template': monsterTemplateEditor(id); break;
     case 'duplicate-monster-template': {
@@ -396,7 +419,7 @@ async function handleAction(el) {
     case 'template-to-combat': {
       const e=active().entries.find(e=>e.id===id);
       openDialog(`В бой: ${esc(e.name)}`,field('Количество','quantity',1,{type:'number',min:1,max:20,required:true}),async data=>{
-        const count=Number(data.get('quantity')),combatants=Array.from({length:count},(_,i)=>{const p=fromEntry(e);if(count>1)p.name=`${e.name.slice(0,190)} ${i+1}`;return p;});
+        const combatants=combatantsFromEntry(e,Number(data.get('quantity')),active().battle);
         inspectedCombatant=combatants[0].id;await mutate(c=>{c.battle=changeBattle(c.battle,{type:'add-many',combatants});});
       },{saveLabel:'Добавить в бой'});break;
     }
@@ -408,7 +431,8 @@ async function handleAction(el) {
     }
     case 'toggle-concentration': await mutate(c=>{const p=c.battle.combatants.find(p=>p.id===id);c.battle=changeBattle(c.battle,{type:'edit',id,values:{concentration:!p.concentration}});});break;
     case 'concentration-checked': await mutate(c=>{c.battle=changeBattle(c.battle,{type:'edit',id,values:{concentrationChecks:[]}});});break;
-    case 'combat-roll': combatRollEditor(active().battle.combatants.find(p=>p.id===id),el.dataset.kind,el.dataset.key);break;
+    case 'combat-roll': combatRollEditor(active().battle.combatants.find(p=>p.id===id),el.dataset.kind,el.dataset.key,el.dataset.part||'');break;
+    case 'quick-combat-roll': await quickCombatRoll(active().battle.combatants.find(p=>p.id===id),el.dataset.kind,el.dataset.key,el.dataset.part||'');break;
     case 'apply-roll-damage': {
       const roll=active().battle.rolls.find(r=>r.id===id),targets=active().battle.combatants.filter(p=>p.trackHp);
       if(!targets.length)throw new Error('Нет участников с учётом HP.');
@@ -450,10 +474,10 @@ async function handleAction(el) {
       await mutate(c=>c.entries.push(entry)); selected=entry.id; view='knowledge'; query=''; filter='';tagFilter='';pinnedOnly=false;render();toast('Существо добавлено в базу знаний');break;
     }
     case 'monster-to-combat': {
-      const input=$('#monster-quantity'); if(!input.checkValidity()){input.reportValidity();return;}
-      const count=Number(input.value),entry=monsterEntry(catalog,catalog.monsters.find(m=>m.id===id));
-      await mutate(c=>{for(let i=0;i<count;i++){const p=fromEntry(entry);if(count>1)p.name=`${entry.name} ${i+1}`;c.battle=changeBattle(c.battle,{type:'add',combatant:p});}});
-      toast(`Добавлено в бой: ${count}`);break;
+      const input=$('#monster-quantity');if(!input.checkValidity()){input.reportValidity();return;}
+      const group=combatantsFromEntry(monsterEntry(catalog,catalog.monsters.find(m=>m.id===id)),Number(input.value),active().battle);
+      await mutate(c=>{c.battle=changeBattle(c.battle,{type:'add-many',combatants:group});});
+      inspectedCombatant=group[0].id;view='combat';render();toast(`Добавлено в бой: ${group.length}`);break;
     }
     case 'vault-refresh': await readMemory(activeId);render();break;
     case 'vault-retry': await retryMemory(activeId);render();break;
@@ -497,9 +521,16 @@ async function handleAction(el) {
       openDialog('Сохранить предложение помощника',field('Название заметки','name','Идея для сессии',{required:true})+field('Текст','text',message.text,{area:true,rows:10}),async data=>{await mutate(c=>{const e=createEntry('note',data.get('name').trim(),data.get('text'));e.tags=['предложение ИИ'];c.entries.push(e);});});break;
     }
     case 'go-sound': view = 'sound'; render(); break;
-    case 'combat-library': view = 'bestiary'; render(); await loadBestiary(); if(view==='bestiary')render(); break;
+    case 'combat-library': await combatBestiaryPicker(); break;
+    case 'pick-combat-monster': combatPickerState.selected=id; $('#combat-monster-results').innerHTML=combatMonsterResults(catalog,combatPickerState); $('#combat-monster-preview').innerHTML=combatMonsterPreview(catalog,combatPickerState); $('#edit-form [type=submit]').disabled=false; break;
     case 'entry-to-combat': await mutate(c => { c.battle = changeBattle(c.battle,{type:'add',combatant:fromEntry(c.entries.find(e=>e.id===id))}); }); toast('Участник добавлен в бой'); break;
-    case 'roll-one': case 'roll-enemies': await mutate(c => { c.battle = changeBattle(c.battle,{type:'roll',values:Object.fromEntries(c.battle.combatants.filter(p=>action==='roll-one'?p.id===id:p.role==='enemy').map(p=>[p.id,d20()+p.initiativeBonus]))}); }); break;
+    case 'roll-one': await quickCombatRoll(active().battle.combatants.find(p=>p.id===id),'initiative');break;
+    case 'roll-enemies': {
+      const enemies=active().battle.combatants.filter(p=>p.role==='enemy');
+      const rolls=enemies.map(p=>({...rollCheck(p.initiativeBonus),id:uid(),actor:p.name,label:'Инициатива',kind:'check',createdAt:now()}));
+      if(!rolls.length)return toast('В очереди пока нет противников.');
+      await mutate(c=>{c.battle=changeBattle(c.battle,{type:'roll',values:Object.fromEntries(enemies.map((p,i)=>[p.id,rolls[i].total])),rolls});});toast('Инициатива противников записана в журнал');break;
+    }
     case 'sort-battle': await mutate(c=>{c.battle=changeBattle(c.battle,{type:'sort'});}); break;
     case 'add-effect': effectEditor(id); break;
     case 'remove-effect': await mutate(c=>{c.battle=changeBattle(c.battle,{type:'effect-remove',id,effectId:el.dataset.effect});}); break;
@@ -580,6 +611,7 @@ document.addEventListener('input', event => {
     storeDrafts();$('#note-save-status').textContent=currentDraft()?'Черновик · Ctrl S для сохранения':'Сохранено на устройстве';
   }
 
+  if(event.target.id==='combat-monster-search'){combatPickerState.query=event.target.value;$('#combat-monster-results').innerHTML=combatMonsterResults(catalog,combatPickerState);}
   if(event.target.id==='monster-search'){bestiaryState.query=event.target.value;$('#monster-list').innerHTML=bestiaryResults(catalog,bestiaryState);}
   if(event.target.id==='ai-prompt')aiState().draft=event.target.value;
   if (event.target.dataset.volume) {

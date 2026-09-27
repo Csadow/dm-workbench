@@ -29,7 +29,7 @@ export async function runDesktopChecks({win,store,handlers,report}) {
       assert.equal(c.soundboard.tracks.length,1);
       await click(`[data-action="open"][data-id="${c.id}"]`);await click('[data-view="combat"]');
       assert.equal(await evaluate("document.querySelectorAll('.combatant').length"),2);
-      const combat=(await store.listCampaigns()).find(c=>c.name==='Боевой стенд');assert.ok(combat);assert.equal(combat.entries[0].stats.combat.actions[0].bonus,9);assert.equal(combat.battle.combatants[2].effects[0].source,'Паук в проходе');
+      const combat=(await store.listCampaigns()).find(c=>c.name==='Боевой стенд');assert.ok(combat);assert.equal(combat.entries[0].stats.combat.actions[0].bonus,9);assert.equal(combat.battle.combatants.find(p=>p.role==='hero').effects[0].source,'Паук в проходе');
       await writeFile(report,JSON.stringify({ok:true,phase:'restart'}));return;
     }
     assert.equal(await evaluate('document.documentElement.dataset.theme'),'dark');

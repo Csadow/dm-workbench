@@ -61,7 +61,7 @@ export function rollCheck(bonus,{mode='normal',manual='',extra=0,die=rollDie}={}
 
 // Only extract values printed in the local SRD. Ambiguous damage stays in the
 // source text: conditional extra dice must never silently become unconditional.
-export function combatFromSRD(text) {
+function legacyCombatFromSRD(text) {
   const result=defaultCombat(), flat=text.replace(/\n/g,' ');
   for(const [key] of Object.entries(ABILITIES)){
     const name=key[0].toUpperCase()+key.slice(1), m=flat.match(new RegExp(`\\b${name} (\\d+) ([+−-]\\d+) ([+−-]\\d+)`));
@@ -85,4 +85,72 @@ export function combatFromSRD(text) {
     if(result.actions.length===20)break;
   }
   return result;
+}
+
+// A capitalized continuation ("Slashing damage ...") is not an action title.
+function actionHeading(name) {
+  const words=name.replace(/\([^)]*\)/g,'').trim().split(/\s+/);
+  return !['Hit','Failure','Success','Failure or Success'].includes(name) && words.every(w=>/^[A-Z][A-Za-z’'–-]*$/.test(w)||/^(?:of|the|and|or|a|an|to|in|with)$/.test(w));
+}
+export function combatFromSRD(text) {
+  const result=legacyCombatFromSRD(text);result.actions=[];
+  const section=text.split(/\nActions\n/)[1]?.split(/\n\nИсточник:/)[0].replace(/\n(?:Bonus Actions|Reactions|Legendary Actions)(?:\n|$)/g,'\n\n');
+  if(!section)return result;
+  const headings=[];
+  // Lookahead allows a rejected continuation to overlap the next valid title.
+  for(const m of section.matchAll(/^(?=([A-Z][A-Za-z0-9 ’',()\/–\-\n]{0,100})\. )/gm)){
+    const name=m[1].replace(/\s+/g,' ').trim();if(actionHeading(name))headings.push({index:m.index,length:m[1].length+2,name});
+  }
+  for(let i=0;i<headings.length && result.actions.length<20;i++){
+    const h=headings[i], notes=section.slice(h.index+h.length,headings[i+1]?.index).replace(/\s+/g,' ').trim();
+    const action={...newAttack(),name:h.name,notes};
+    const attack=notes.match(/Attack Roll: ([+−-]\d+)/);if(attack)action.bonus=Number(attack[1].replace('−','-'));
+    action.range=notes.match(/(?:reach|range) [\d/]+ ft\./)?.[0]||'';
+    const save=notes.match(/(Strength|Dexterity|Constitution|Intelligence|Wisdom|Charisma) Saving Throw: DC (\d+)/);
+    if(save){action.saveDc=Number(save[2]);action.saveAbility=({Strength:'str',Dexterity:'dex',Constitution:'con',Intelligence:'int',Wisdom:'wis',Charisma:'cha'})[save[1]];}
+    // Keep source-derived damage dynamic, including separately labelled extras.
+    result.actions.push(action);
+  }
+  return result;
+}
+
+const damageTerm=/(\d+)(?:\s*\((\d+d\d+(?:\s*[+-]\s*\d+)?)\))?\s+(Acid|Bludgeoning|Cold|Fire|Force|Lightning|Necrotic|Piercing|Poison|Psychic|Radiant|Slashing|Thunder) damage/i;
+const damageTypes={acid:'кислота',bludgeoning:'дробящий',cold:'холод',fire:'огонь',force:'силовой',lightning:'молния',necrotic:'некротический',piercing:'колющий',poison:'яд',psychic:'психический',radiant:'излучение',slashing:'рубящий',thunder:'звук'};
+export function damageOptions(action) {
+  if(action.damage)return [{formula:action.damage,label:'Урон',note:'',extra:false}];
+  const clause=action.notes.replace(/\s+/g,' ').match(/(?:Hit|Failure): ([^.]+)/)?.[1];
+  if(!clause)return [];
+  const matches=[...clause.matchAll(new RegExp(damageTerm.source,'gi'))],base=[],types=[],extras=[];
+  for(let i=0;i<matches.length;i++){
+    const m=matches[i],before=clause.slice(i?matches[i-1].index+matches[i-1][0].length:0,m.index);
+    if(i===0?before.trim()!=='':!/^\s*,?\s*(?:plus|and)\s*$/i.test(before))break;
+    const tail=clause.slice(m.index+m[0].length,matches[i+1]?.index),formula=(m[2]||m[1]).replace(/\s/g,''),type=damageTypes[m[3].toLowerCase()];
+    if(/\b(?:if|while|when|against|for each|or)\b/i.test(tail))extras.push({formula,label:`Доп. урон (${type})`,note:(m[0]+tail).trim(),extra:true});
+    else {base.push(formula);types.push(type);}
+  }
+  return [...(base.length?[{formula:base.join('+'),label:'Урон',note:[...new Set(types)].join(' + '),extra:false}]:[]),...extras];
+}
+
+const profileSignature=p=>JSON.stringify({...p,actions:p.actions.map(({id,...a})=>a)});
+export function upgradeSRDCombat(profile,text,ownerId) {
+  if(!text.includes('Источник: SRD 5.2.1') || !text.includes('MOD SAVE'))return profile;
+  // Preserve edits to homebrew or imported cards. Only replace the exact output
+  // of the 0.7 parser, including its truncated actions, and preserve action IDs.
+  const old=legacyCombatFromSRD(text);
+  if(profileSignature(profile)!==profileSignature(old))return profile;
+  const fresh=combatFromSRD(text);
+  fresh.actions=fresh.actions.map((a,i)=>({...a,id:profile.actions.find(x=>x.name===a.name)?.id||`${ownerId}_srd_${i}`}));
+  return fresh;
+}
+
+export function combatRollSpec(p,kind,key='',part='') {
+  const action=p.combat.actions.find(a=>a.id===key),ability=p.combat.abilities[key];
+  if(key==='' && kind==='attack')return {label:'Бросок попадания',bonus:null};
+  if(key==='' && kind==='damage')return {label:'Урон',formula:''};
+  if(kind==='initiative')return {label:'Инициатива',bonus:p.initiativeBonus};
+  if(kind==='save' && ability)return {label:`Спасбросок ${ABILITIES[key]}`,bonus:saveBonus(ability)};
+  if(kind==='ability' && ability)return {label:`Проверка ${ABILITIES[key]}`,bonus:abilityBonus(ability.score)};
+  if(kind==='attack' && action)return {label:action.name,bonus:action.bonus,notes:action.notes};
+  if(kind==='damage' && action){const options=damageOptions(action),damage=part===''?options.find(o=>!o.extra):options[Number(part)];return {label:action.name+(damage?.extra?' · дополнительный урон':''),formula:damage?.formula||'',notes:action.notes,condition:damage?.extra?damage.note:''};}
+  throw new Error('Действие больше не существует.');
 }

@@ -157,7 +157,7 @@ export function importBundle(text) {
   check(object(data) && data.application === 'dm-workbench', 'неизвестный формат.');
   check([1, 2, 3, 4].includes(data.formatVersion), 'версия формата не поддерживается. Исходные кампании не изменены.');
   date(data.exportedAt);
-  const c = data.formatVersion < 4 ? migrateCampaign(data.campaign) : data.campaign;
+  const c = migrateCampaign(data.campaign);
   validateDocument(c);
   const assets = checkAssets(c, data.assets || []);
   const ids = new Map();

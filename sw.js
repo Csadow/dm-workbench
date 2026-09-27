@@ -1,5 +1,5 @@
 // Bump when any shell file changes. A new worker waits until all old tabs close.
-const CACHE = 'dm-workbench-v8';
+const CACHE = 'dm-workbench-v9';
 const FILES = ['./', './index.html', './app/main.js', './app/theme.js', './app/desktop.js', './app/markdown.js', './app/knowledge.js', './app/vault.js', './app/bestiary.js', './app/assistant.js', './assets/srd-monsters.json', './app/ui.js', './app/screens.js', './app/audio.js', './app/domain.js', './app/combat.js', './app/combat-ui.js', './app/storage.js', './app/backup.js', './app/styles.css', './assets/icon.svg', './manifest.webmanifest'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES))));
 self.addEventListener('activate', event => event.waitUntil((async () => {

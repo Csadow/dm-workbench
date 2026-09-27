@@ -133,11 +133,10 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('.monster-row').length"),5);
   await click('[data-action="monster"][data-id="goblin-warrior"]');
   assert.equal(await evaluate("document.querySelector('#monster-reader').textContent.includes('Nimble Escape')"),true);
-  await setValue('#monster-quantity','2');await click('[data-action="monster-to-combat"]');await waitText('Добавлено в бой: 2');
   await screenshot('dmw-bestiary.png');
+  await setValue('#monster-quantity','2');await click('[data-action="monster-to-combat"]');await waitText('Добавлено в бой: 2');
   await click('[data-view="combat"]');assert.equal(await evaluate("document.querySelectorAll('.combatant').length"),4);
-  await click('[data-action="undo-battle"]');await until(()=>evaluate("document.querySelectorAll('.combatant').length===3"),'undo second monster');
-  await click('[data-action="undo-battle"]');await until(()=>evaluate("document.querySelectorAll('.combatant').length===2"),'undo first monster');
+  await click('[data-action="undo-battle"]');await until(()=>evaluate("document.querySelectorAll('.combatant').length===2"),'undo entire reinforcement group');
   await click('[data-view="knowledge"]');
   await click('.entry-card');
   assert.equal(await evaluate("!!document.querySelector('#entry-reader h2')"),true);

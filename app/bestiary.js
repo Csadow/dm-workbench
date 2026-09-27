@@ -27,6 +27,15 @@ export function bestiaryResults(catalog,state) {
   const found=findMonsters(catalog,state);
   return `<p class="muted tiny">Найдено: ${found.length} из ${catalog.monsters.length}</p>${found.map(m=>`<button class="monster-row ${state.selected===m.id?'active-entry':''}" data-action="monster" data-id="${m.id}"><span><strong>${esc(russianName(m)||m.name)}</strong><small>${esc(m.name)} · ${CREATURE_TYPES[m.type]}</small></span><span class="badge">CR ${m.cr}</span></button>`).join('')||empty('Нет совпадений','Попробуйте английское название или другой фильтр.')}`;
 }
+export function combatMonsterResults(catalog,state) {
+  const found=findMonsters(catalog,state);
+  return `<p class="muted tiny">Найдено: ${found.length}</p>${found.map(m=>`<button type="button" class="monster-row ${state.selected===m.id?'active-entry':''}" data-action="pick-combat-monster" data-id="${m.id}" aria-pressed="${state.selected===m.id}"><span><strong>${esc(russianName(m)||m.name)}</strong><small>${esc(m.name)} · КД ${m.ac} · ${m.hp} HP</small></span><span class="badge">CR ${m.cr}</span></button>`).join('')||'<p class="muted">Нет совпадений. Попробуйте другое название.</p>'}`;
+}
+export function combatMonsterPreview(catalog,state) {
+  const m=catalog.monsters.find(m=>m.id===state.selected);
+  if(!m)return '<p class="muted">Выберите монстра слева. Его экземпляры добавятся к текущим участникам.</p>';
+  return `<h3>${esc(russianName(m)||m.name)}</h3><p class="muted">${esc(m.name)} · CR ${m.cr}</p><p>КД <strong>${m.ac}</strong> · HP <strong>${m.hp}</strong> · Инициатива <strong>${m.initiativeBonus>=0?'+':''}${m.initiativeBonus}</strong></p><details><summary>Характеристики и действия</summary><div class="preline">${esc(m.text)}</div></details>`;
+}
 export function bestiaryReader(catalog,state) {
   const m=catalog.monsters.find(m=>m.id===state.selected);
   if(!m)return empty('Выберите существо','Готовые характеристики, способности и действия из официального SRD.');

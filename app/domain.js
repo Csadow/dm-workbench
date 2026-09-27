@@ -1,4 +1,4 @@
-import { defaultCombat, combatFromSRD } from './combat.js';
+import { defaultCombat, combatFromSRD, upgradeSRDCombat } from './combat.js';
 export const SYSTEM = 'dnd-5.5e-2024';
 export const TYPES = { npc: 'Персонаж', location: 'Место', faction: 'Фракция', hook: 'Зацепка', item: 'Предмет', note: 'Заметка', monster: 'Существо', spell: 'Заклинание', rule: 'Правило' };
 export const ROLES = { hero: 'Герой', ally: 'Союзник', enemy: 'Противник', neutral: 'Нейтральный' };
@@ -34,7 +34,12 @@ export function changeBattle(battle, action) {
   switch (action.type) {
     case 'add': next.combatants.push(structuredClone(action.combatant)); break;
     case 'add-many': next.combatants.push(...structuredClone(action.combatants)); break;
-    case 'record-roll': next.rolls = [...next.rolls.slice(-29), structuredClone(action.roll)]; break;
+    case 'record-roll':
+      if(action.initiative!==undefined){
+        if(!target || !Number.isSafeInteger(action.initiative) || Math.abs(action.initiative)>1000)throw new Error('Неверная инициатива.');
+        target.initiative=action.initiative;
+      }
+      next.rolls = [...next.rolls.slice(-29), structuredClone(action.roll)]; break;
     case 'start':
       if (!next.combatants.length) return structuredClone(battle);
       next.combatants.sort((a, b) => b.initiative - a.initiative);
@@ -84,6 +89,7 @@ export function changeBattle(battle, action) {
     case 'sort': next.combatants.sort((a, b) => b.initiative - a.initiative); break;
     case 'roll':
       for (const c of next.combatants) if (Object.hasOwn(action.values, c.id)) c.initiative = action.values[c.id];
+      if(action.rolls)next.rolls=[...next.rolls,...structuredClone(action.rolls)].slice(-30);
       break;
     case 'effect-add':
       if (!target) return structuredClone(battle);
@@ -131,7 +137,11 @@ export function demoCampaign() {
 // Reading never deletes or overwrites an existing campaign.
 export function migrateCampaign(input) {
   const c = structuredClone(input);
-  if (c.schemaVersion === 4) return c;
+  if (c.schemaVersion === 4) {
+    for(const e of c.entries)e.stats.combat=upgradeSRDCombat(e.stats.combat,e.text,e.id);
+    for(const state of [c.battle,...c.battle.history,...c.encounters])for(const p of state.combatants)p.combat=upgradeSRDCombat(p.combat,p.notes,p.id);
+    return c;
+  }
   if (![undefined, 1, 2, 3].includes(c.schemaVersion)) throw new Error('Версия данных кампании новее приложения.');
   if (c.schemaVersion === undefined || c.schemaVersion === 1) {
     c.assistant = {messages: []}; c.encounters = []; c.soundboard = emptySoundboard();
@@ -154,6 +164,16 @@ export function migrateCampaign(input) {
 }
 export function fromEntry(entry) {
   return { ...createCombatant(entry.name, entry.stats.maxHp, 0), ac: entry.stats.ac, role: entry.stats.role, initiativeBonus: entry.stats.initiativeBonus, notes: entry.text, speed: entry.stats.speed, combat: structuredClone(entry.stats.combat || defaultCombat()) };
+}
+export function combatantsFromEntry(entry,count,battle) {
+  if(!Number.isInteger(count)||count<1||count>20)throw new Error('Количество существ: от 1 до 20.');
+  if(battle.combatants.length+count>300)throw new Error('В бою может быть не больше 300 участников.');
+  const names=new Set(battle.combatants.map(p=>p.name)),base=entry.name.slice(0,190);
+  return Array.from({length:count},()=>{
+    const p=fromEntry(entry);let number=1;
+    if(count>1||names.has(p.name)){while(names.has(`${base} ${number}`))number++;p.name=`${base} ${number}`;}
+    names.add(p.name);return p;
+  });
 }
 export function createEncounter(name, battle) {
   return { id: uid(), name: name.trim(), combatants: battle.combatants.map(c => ({ ...structuredClone(c), id: uid(), hp: c.maxHp, tempHp: 0, effects: [], concentration: false, concentrationChecks: [] })) };

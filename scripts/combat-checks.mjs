@@ -33,12 +33,12 @@ export async function combatChecks({evaluate,click,input,until,submit,screenshot
   c=await campaign();assert.equal(c.battle.combatants.find(p=>p.id===first).hp,15);assert.equal(c.battle.combatants.find(p=>p.id===second).hp,42);
   await click('[data-action="undo-battle"]');await until(`document.querySelector('${row} .health strong').textContent==='42'`,'damage undo');
   assert.equal(await evaluate(`!!document.querySelector('${row} .concentration-warning')`),false);
-  await click(`${row} [data-action="inspect-combatant"]`);await click('[data-kind="attack"]');
+  await click(`${row} [data-action="inspect-combatant"]`);await click('[data-action="combat-roll"][data-kind="attack"]');
   await input('[name=mode]','advantage');await input('[name=manual]','4 18');await input('[name=extra]','-2');await submit();
   await until("document.querySelector('.roll-result>b')?.textContent==='22'",'manual advantage calculation');
-  await click('[data-kind="save"][data-key="dex"]');await input('[name=manual]','12');await submit();
+  await click('[data-action="combat-roll"][data-kind="save"][data-key="dex"]');await input('[name=manual]','12');await submit();
   await until("document.querySelector('.roll-result>b')?.textContent==='18'",'printed save bonus');
-  await click('[data-kind="damage"]');await input('[name=formula]','7');await submit();
+  await click('[data-action="combat-roll"][data-kind="damage"]');await input('[name=formula]','7');await submit();
   await click('[data-action="apply-roll-damage"]');await input('[name=target]',second);await input('[name=scale]','0.5');await submit();
   c=await campaign();assert.equal(c.battle.combatants.find(p=>p.id===second).hp,39,'half damage floors per target');
   await click('[data-action="edit-monster-template"]');await input('[data-attack-editor] [name$="-bonus"]','9');await submit();
@@ -54,5 +54,43 @@ export async function combatChecks({evaluate,click,input,until,submit,screenshot
   assert.equal(await evaluate("document.querySelectorAll('.roll-result').length"),3);
   const restored=await evaluate(`(async()=>{const {exportCampaign,importBundle}=await import('./app/backup.js');const c=(await (await import('./app/storage.js')).listCampaigns()).find(c=>c.id==='${c.id}');return importBundle(exportCampaign(c)).campaign;})()`);
   assert.equal(restored.battle.combatants[2].effects[0].source,'Паук в проходе');assert.equal(restored.entries[0].stats.combat.actions[0].bonus,9);
+  // Add from the SRD before and during combat through the actual picker, without
+  // leaving combat or resetting an existing participant's HP/conditions/turn.
+  // Search accepts English display names (IDs use hyphens).
+  await click('.page-heading [data-action="combat-library"]');await until("!!document.querySelector('#combat-monster-search')",'picker on populated preparation');
+  await input('#combat-monster-search','Skeleton');await click('[data-action="pick-combat-monster"][data-id="skeleton"]');await submit();
+  c=await campaign();assert.equal(c.battle.combatants.length,4);assert.equal(c.battle.started,false);
+  await click('[data-action="undo-battle"]');await until("document.querySelectorAll('.combatant').length===3",'undo SRD addition in preparation');
+  await click('[data-action="start-battle"]');await until("!!document.querySelector('[data-action=next-turn]')",'combat started');
+  const before=(await campaign()).battle;
+  await click('.page-heading [data-action="combat-library"]');await until("!!document.querySelector('#combat-monster-search')",'picker during combat');
+  await input('#combat-monster-search','гоблин');
+  await click('[data-action="pick-combat-monster"][data-id="goblin-warrior"]');await input('[name=quantity]','2');await submit();
+  c=await campaign();assert.equal(c.battle.combatants.length,5);assert.equal(c.battle.activeId,before.activeId);assert.equal(c.battle.round,before.round);
+  assert.deepEqual(c.battle.combatants.slice(0,3),before.combatants);
+  const goblin=c.battle.combatants[3];
+  assert.equal(await evaluate("document.querySelectorAll('.combat-inspector [data-kind=save][data-action=quick-combat-roll]').length"),6);
+  const quick=async selector=>{
+    const previous=(await campaign()).battle.rolls.at(-1)?.id;
+    await click(selector);await until(`!!document.querySelector('.quick-roll-result') && document.querySelector('.quick-roll-result').dataset.roll!=='${previous}'`,'quick roll saved');
+    await until("!document.body.classList.contains('saving')",'quick roll persistence');
+    assert.equal(await evaluate("document.querySelector('#editor').open"),false,'quick roll needs no dialog');
+    return (await campaign()).battle.rolls.at(-1);
+  };
+  const initiative=await quick('[data-action="quick-combat-roll"][data-kind="initiative"]');
+  assert.ok(initiative.total>=3&&initiative.total<=22);assert.equal((await campaign()).battle.combatants.find(p=>p.id===goblin.id).initiative,initiative.total);
+  for(const [key,bonus] of [['str',-1],['dex',2],['con',0],['int',0],['wis',-1],['cha',-1]]){
+    const r=await quick(`[data-action="quick-combat-roll"][data-kind="save"][data-key="${key}"]`);assert.ok(r.total>=1+bonus&&r.total<=20+bonus);
+  }
+  const scroll=await evaluate("(()=>{const panel=document.querySelector('.combat-inspector');panel.scrollTop=180;return panel.scrollTop;})()");
+  const hit=await quick('[data-action="quick-combat-roll"][data-kind="attack"]');assert.ok(hit.total>=5&&hit.total<=24);
+  assert.equal(await evaluate("document.querySelector('.combat-inspector').scrollTop"),scroll,'quick rolls preserve card scroll');
+  const damage=await quick('[data-action="quick-combat-roll"][data-kind="damage"]');assert.equal(damage.formula,'1d6+2');assert.ok(damage.total>=3&&damage.total<=8);
+  assert.equal(await evaluate("!!document.querySelector('.conditional-damage [data-kind=damage]')"),true);
+  await click('.conditional-damage [data-kind="damage"]');assert.equal(await evaluate("document.querySelector('[name=formula]').value"),'1d4');
+  assert.match(await evaluate("document.querySelector('.damage-condition').textContent"),/Advantage/);await submit();
+  assert.match((await campaign()).battle.rolls.at(-1).label,/дополнительный/);
+  await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');await screenshot('dmw-combat-srd-rolls.png');
+  assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
   return c.id;
 }
