@@ -1,4 +1,4 @@
-import { app, BrowserWindow, protocol, ipcMain, dialog, shell, Menu } from 'electron';
+import { app, BrowserWindow, protocol, ipcMain, dialog, shell, Menu, nativeTheme } from 'electron';
 import { readFile, mkdir, access, readdir } from 'node:fs/promises';
 import { join, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +51,13 @@ async function chooseLibrary() {
   await openLibrary(root);return true;
 }
 const handlers={
+  setTheme:async value=>{
+    if(!['dark','light','system'].includes(value))throw new Error('Неизвестная тема.');
+    const previous=settings.theme;settings.theme=value;
+    try{await persistSettings();}catch(error){settings.theme=previous;throw error;}
+    nativeTheme.themeSource=value;
+    win?.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#151519':'#f6f4ef');
+  },
   listCampaigns:()=>store.listCampaigns(),saveCampaign:(...args)=>store.saveCampaign(...args),getAsset:(...args)=>store.getAsset(...args),
   loadCampaignBundle:id=>store.loadCampaignBundle(id),loadProfile:()=>store.loadProfile(),saveProfile:p=>store.saveProfile(p),
   linkImport:(source,target)=>{if(!/^[a-zA-Z0-9_-]{1,100}$/.test(source)||!store.current(target))throw new Error('Неверный импорт.');store.db.prepare('INSERT OR REPLACE INTO imports(source,target) VALUES(?,?)').run(source,target);},
@@ -103,6 +110,8 @@ app.whenReady().then(async()=>{
 try {
   await mkdir(configDir,{recursive:true,mode:0o700});
   try{settings=JSON.parse(await readFile(configFile,'utf8'));}catch{}
+  settings.theme=['dark','light','system'].includes(settings.theme)?settings.theme:'dark';
+  nativeTheme.themeSource=settings.theme;
   settings.aiDir=process.env.DMW_AI_DIR||settings.aiDir||join(configDir,'local-ai');
   await openLibrary(resolve(process.env.DMW_DATA_DIR||settings.library||join(app.getPath('documents'),'DM Workbench')));
   protocol.handle('dmw',async request=>{
@@ -123,7 +132,8 @@ try {
     if(!win||event.sender!==win.webContents||event.senderFrame!==event.sender.mainFrame||!event.senderFrame.url.startsWith('dmw://app/')||!Object.hasOwn(handlers,name)||!Array.isArray(args)||args.length>3)throw new Error('Недопустимый запрос приложения.');
     return handlers[name](...args);
   });
-  win=new BrowserWindow({title:'DM Workbench',width:1440,height:940,minWidth:960,minHeight:650,show:false,backgroundColor:'#f6f4ef',webPreferences:{preload:join(sourceRoot,'desktop/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
+  win=new BrowserWindow({title:'DM Workbench',width:1440,height:940,minWidth:960,minHeight:650,show:false,backgroundColor:nativeTheme.shouldUseDarkColors?'#151519':'#f6f4ef',webPreferences:{preload:join(sourceRoot,'desktop/preload.cjs'),additionalArguments:[`--dmw-theme=${settings.theme}`],contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
+  nativeTheme.on('updated',()=>{if(win&&!win.isDestroyed())win.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#151519':'#f6f4ef');});
   win.webContents.session.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
   win.webContents.session.setPermissionCheckHandler(()=>false);
   win.webContents.setWindowOpenHandler(({url})=>{try{const u=new URL(url);if(['https:','http:'].includes(u.protocol)&&!u.username&&!u.password)shell.openExternal(u.href);}catch{}return {action:'deny'};});

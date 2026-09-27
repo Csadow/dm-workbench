@@ -84,6 +84,18 @@ try {
   };
   await command('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: temp }, null);
   await newPage();
+  assert.equal(await evaluate('document.documentElement.dataset.theme'),'dark');
+  const selectTheme=async value=>{
+    await evaluate(`(()=>{const select=document.querySelector('[data-theme-choice]');select.value='${value}';select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await until(()=>evaluate(`workbenchTheme.preference==='${value}'`),'theme '+value);
+    await new Promise(resolve=>setTimeout(resolve,180)); // Let existing button hover transitions settle before screenshots.
+  };
+  await selectTheme('system');
+  for(const value of ['light','dark']){
+    await command('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value}]});
+    await until(()=>evaluate(`document.documentElement.dataset.theme==='${value}'`),'system theme '+value);
+  }
+  await selectTheme('dark');
   await screenshot('dmw-welcome.png');
   await click('[data-action="demo"]'); await waitText('Тайны Тихой гавани');
   await until(() => evaluate("!!document.querySelector('[data-action=go-combat]')"), 'demo overview');
@@ -152,6 +164,7 @@ try {
   assert.match(await evaluate("document.querySelector('.markdown-body').textContent"),/маяку/);
   assert.equal(await evaluate("document.querySelector('.wiki-link').dataset.action"),'entry');
   await screenshot('dmw-knowledge.png');
+  await selectTheme('light');await screenshot('dmw-knowledge-light.png');await selectTheme('dark');
   await command('Emulation.setDeviceMetricsOverride',{width:1366,height:768,deviceScaleFactor:1,mobile:false});
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'),true);
   await screenshot('dmw-knowledge-laptop.png');

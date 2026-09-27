@@ -4,17 +4,25 @@ import { join } from 'node:path';
 import { demoCampaign } from '../app/domain.js';
 import { exportCampaign } from '../app/backup.js';
 import { snapshot, restoreBackup } from '../desktop/backup.mjs';
+import { nativeTheme } from 'electron';
 export async function runDesktopChecks({win,store,handlers,report}) {
   const evaluate=expression=>win.webContents.executeJavaScript(expression,true);
   async function until(expression,label) {const end=Date.now()+15000;while(Date.now()<end){if(await evaluate(expression))return;await new Promise(r=>setTimeout(r,100));}throw new Error('Timeout: '+label);}
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const input=(selector,value)=>evaluate(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  async function theme(value) {
+    await evaluate(`(()=>{const select=document.querySelector('[data-theme-choice]');select.value='${value}';select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await until(`workbenchTheme.preference==='${value}'&&!document.querySelector('[data-theme-choice]').disabled`,'theme '+value);
+    assert.equal(nativeTheme.themeSource,value);
+  }
   try {
     await until("!!document.querySelector('.campaign-grid')",'desktop boot');
     assert.equal(await evaluate('typeof require'),'undefined');assert.equal(await evaluate('typeof process'),'undefined');
     assert.equal(await evaluate('!!globalThis.dmw.storage'),true);
     assert.equal(await evaluate('navigator.serviceWorker.controller === null'),true);
     if(process.env.DMW_TEST_PHASE==='restart') {
+      assert.equal(await evaluate('document.documentElement.dataset.theme'),'light','appearance survives full restart');
+      assert.equal(nativeTheme.themeSource,'light');
       const c=(await store.listCampaigns()).find(c=>c.name==='Тайны Тихой гавани');assert.ok(c);
       assert.equal(c.entries[0].text,'Внешний факт после Obsidian.');
       assert.equal(c.soundboard.tracks.length,1);
@@ -22,11 +30,21 @@ export async function runDesktopChecks({win,store,handlers,report}) {
       assert.equal(await evaluate("document.querySelectorAll('.combatant').length"),2);
       await writeFile(report,JSON.stringify({ok:true,phase:'restart'}));return;
     }
+    assert.equal(await evaluate('document.documentElement.dataset.theme'),'dark');
+    await theme('system');
+    // Simulate OS changes through Electron, without touching the user's desktop settings.
+    nativeTheme.themeSource='light';await until("document.documentElement.dataset.theme==='light'",'system light');
+    nativeTheme.themeSource='dark';await until("document.documentElement.dataset.theme==='dark'",'system dark');
+    await theme('dark');
     await click('[data-action="demo"]');await until("!!document.querySelector('[data-view=knowledge]')",'demo saved');
     let c=(await store.listCampaigns())[0];
     await click('[data-view="knowledge"]');await until("!!document.querySelector('[data-action=note-mode]')",'notes');
     await click(`[data-action="entry"][data-id="${c.entries[0].id}"]`);await click('[data-action="note-mode"]');
-    await input('#note-text','Текст из настольного редактора.');await click('[data-action="note-save"]');
+    await input('#note-text','Текст из настольного редактора.');
+    await evaluate("globalThis.themeDraft=document.querySelector('#note-text');themeDraft.setSelectionRange(3,10)");
+    await theme('light');
+    assert.equal(await evaluate("themeDraft===document.querySelector('#note-text')&&themeDraft.selectionStart===3&&themeDraft.selectionEnd===10"),true,'switching theme keeps editor and selection');
+    await theme('dark');await click('[data-action="note-save"]');
     await until("document.querySelector('#toast').textContent.includes('Заметка сохранена')",'native note save');
     const path=join(store.root,'campaigns',c.id,'notes','Персонажи','Мира Вейл.md');
     assert.match(await readFile(path,'utf8'),/настольного редактора/);
@@ -56,6 +74,9 @@ export async function runDesktopChecks({win,store,handlers,report}) {
     await click('[data-action="help"]');await until("!!document.querySelector('[data-action=native-backup]')",'native settings');
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     const image=await win.webContents.capturePage();await writeFile(report+'.png',image.toPNG());
+    await theme('light');
+    await win.webContents.reload();await until("!!document.querySelector('.campaign-grid')",'theme reload');
+    assert.equal(await evaluate('document.documentElement.dataset.theme'),'light');
     assert.equal((await evaluate('indexedDB.databases()')).length,0,'campaigns never written to IndexedDB');
     await writeFile(report,JSON.stringify({ok:true,phase:'first',campaigns:2,backupBytes:backup.length}));
   }catch(error){await writeFile(report,JSON.stringify({ok:false,error:error.stack,body:await evaluate('document.body.innerText').catch(()=>''),}));throw error;}
