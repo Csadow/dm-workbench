@@ -1,0 +1,36 @@
+import { createEntry } from './domain.js';
+import { esc, icon, button, sectionHead, empty } from './ui.js';
+export const CREATURE_TYPES = {Aberration:'Аберрация',Beast:'Зверь',Celestial:'Небожитель',Construct:'Конструкт',Dragon:'Дракон',Elemental:'Элементаль',Fey:'Фея',Fiend:'Исчадие',Giant:'Великан',Humanoid:'Гуманоид',Monstrosity:'Монстр',Ooze:'Слизь',Plant:'Растение',Undead:'Нежить'};
+// Search aliases are editorial Russian labels; source stat blocks stay in English.
+const aliases = {aboleth:'Аболет','air-elemental':'Воздушный элементаль','earth-elemental':'Земляной элементаль','fire-elemental':'Огненный элементаль','water-elemental':'Водяной элементаль','goblin-minion':'Гоблин-приспешник','goblin-warrior':'Гоблин-воин','goblin-boss':'Гоблин-вожак',skeleton:'Скелет',zombie:'Зомби',wolf:'Волк','dire-wolf':'Лютый волк',bandit:'Бандит','bandit-captain':'Капитан бандитов',guard:'Стражник','guard-captain':'Капитан стражи',ogre:'Огр',troll:'Тролль',tarrasque:'Тарраск',lich:'Лич',vampire:'Вампир','vampire-spawn':'Порождение вампира',mimic:'Мимик',owlbear:'Совомедведь',kobold:'Кобольд',orc:'Орк','giant-spider':'Гигантский паук','giant-rat':'Гигантская крыса',rat:'Крыса',bat:'Летучая мышь','brown-bear':'Бурый медведь','black-bear':'Чёрный медведь',ghoul:'Упырь',ghost:'Привидение',wraith:'Призрак',banshee:'Банши','gelatinous-cube':'Желатиновый куб',doppelganger:'Доппельгангер',dryad:'Дриада',unicorn:'Единорог',pegasus:'Пегас',hydra:'Гидра',wyvern:'Виверна',griffon:'Грифон',basilisk:'Василиск',medusa:'Медуза',minotaur:'Минотавр',succubus:'Суккуб',imp:'Бес',quasit:'Квазит',assassin:'Убийца',mage:'Маг',priest:'Жрец',druid:'Друид',cultist:'Культист',berserker:'Берсерк',spy:'Шпион',scout:'Разведчик',knight:'Рыцарь',pirate:'Пират','pirate-captain':'Капитан пиратов','bugbear-warrior':'Медвежатник-воин','bugbear-stalker':'Медвежатник-охотник','hobgoblin-warrior':'Хобгоблин-воин','hobgoblin-captain':'Капитан хобгоблинов'};
+const colors = {Black:'Чёрный',Blue:'Синий',Brass:'Латунный',Bronze:'Бронзовый',Copper:'Медный',Gold:'Золотой',Green:'Зелёный',Red:'Красный',Silver:'Серебряный',White:'Белый'};
+export function russianName(m) {
+  if (aliases[m.id]) return aliases[m.id];
+  const dragon=m.name.match(/^(?:(Ancient|Adult|Young) )?(Black|Blue|Brass|Bronze|Copper|Gold|Green|Red|Silver|White) Dragon( Wyrmling)?$/);
+  if(dragon) return `${dragon[3]?'Детёныш дракона':({Ancient:'Древний',Adult:'Взрослый',Young:'Молодой'}[dragon[1]]||'')+' дракон'} · ${colors[dragon[2]]}`;
+  return '';
+}
+export const challenge = value => value.includes('/') ? Number(value.split('/')[0])/Number(value.split('/')[1]) : Number(value);
+export function findMonsters(catalog, state) {
+  const q=(state.query||'').toLocaleLowerCase('ru').trim();
+  return catalog.monsters.filter(m=>(!state.type||m.type===state.type)&&(!state.cr||m.cr===state.cr)&&`${m.name} ${russianName(m)} ${CREATURE_TYPES[m.type]}`.toLocaleLowerCase('ru').includes(q)).sort((a,b)=>state.sort==='cr'?challenge(a.cr)-challenge(b.cr)||a.name.localeCompare(b.name):a.name.localeCompare(b.name));
+}
+export function monsterEntry(catalog, monster) {
+  const label=russianName(monster);
+  const e=createEntry('monster', label?`${label} / ${monster.name}`:monster.name, `${monster.text}\n\nИсточник: SRD ${catalog.version}, стр. ${monster.page}.\n${catalog.source}#page=${monster.page}\n\n${catalog.attribution}`);
+  e.stats={ac:monster.ac,maxHp:monster.hp,initiativeBonus:monster.initiativeBonus,speed:monster.speed,role:'enemy'};
+  e.tags=['SRD 5.2.1',CREATURE_TYPES[monster.type],`CR ${monster.cr}`];
+  return e;
+}
+export function bestiaryResults(catalog,state) {
+  const found=findMonsters(catalog,state);
+  return `<p class="muted tiny">Найдено: ${found.length} из ${catalog.monsters.length}</p>${found.map(m=>`<button class="monster-row ${state.selected===m.id?'active-entry':''}" data-action="monster" data-id="${m.id}"><span><strong>${esc(russianName(m)||m.name)}</strong><small>${esc(m.name)} · ${CREATURE_TYPES[m.type]}</small></span><span class="badge">CR ${m.cr}</span></button>`).join('')||empty('Нет совпадений','Попробуйте английское название или другой фильтр.')}`;
+}
+export function bestiaryReader(catalog,state) {
+  const m=catalog.monsters.find(m=>m.id===state.selected);
+  if(!m)return empty('Выберите существо','Готовые характеристики, способности и действия из официального SRD.');
+  return `<span class="badge">SRD 5.2.1 · CR ${m.cr}</span><h2>${esc(russianName(m)||m.name)}</h2><p class="muted">${esc(m.name)} · ${esc(m.description)}</p><div class="stat-block"><div><small>Класс доспеха</small><strong>${m.ac}</strong></div><div><small>Хиты</small><strong>${m.hp}</strong></div><div><small>Инициатива</small><strong>${m.initiativeBonus>=0?'+':''}${m.initiativeBonus}</strong></div><div><small>Скорость</small><strong>${esc(m.speed)}</strong></div></div><div class="actions">${button('monster-to-combat',icon('sword')+' В бой','primary',m.id)}${button('monster-to-knowledge',icon('book')+' В базу знаний','secondary',m.id)}<label class="monster-quantity">Количество<input id="monster-quantity" type="number" min="1" max="20" value="1" aria-label="Количество существ"></label></div><p class="muted tiny">В бой добавляются независимые участники. Текст характеристик — оригинал на английском.</p><div class="statblock-text preline">${esc(m.text)}</div><p class="muted tiny"><a href="${catalog.source}#page=${m.page}" target="_blank" rel="noopener noreferrer">Официальный PDF, стр. ${m.page}</a> · CC BY 4.0</p>`;
+}
+export function bestiaryPage(catalog,state,error='') {
+  return `${sectionHead('ОФИЦИАЛЬНЫЕ ОТКРЫТЫЕ МАТЕРИАЛЫ','Бестиарий SRD','Готовые существа для боя и базы знаний. Доступны без интернета.')}${!catalog?`<section class="panel"><p>${esc(error||'Загружаем бестиарий…')}</p>${button('reload-bestiary','Повторить','secondary')}</section>`:`<div class="knowledge-filters"><label class="search">${icon('search')}<input id="monster-search" type="search" placeholder="Гоблин, dragon, skeleton…" aria-label="Поиск существ" value="${esc(state.query)}"></label><select id="monster-type" aria-label="Тип существа"><option value="">Все типы</option>${Object.entries(CREATURE_TYPES).map(([k,v])=>`<option value="${k}" ${state.type===k?'selected':''}>${v}</option>`).join('')}</select><select id="monster-cr" aria-label="Опасность"><option value="">Любая опасность</option>${[...new Set(catalog.monsters.map(m=>m.cr))].sort((a,b)=>challenge(a)-challenge(b)).map(cr=>`<option value="${cr}" ${state.cr===cr?'selected':''}>CR ${cr}</option>`).join('')}</select><select id="monster-sort" aria-label="Порядок существ"><option value="name">По имени</option><option value="cr" ${state.sort==='cr'?'selected':''}>По опасности</option></select></div><div class="bestiary-workspace"><div id="monster-list">${bestiaryResults(catalog,state)}</div><section id="monster-reader" class="panel entry-reader">${bestiaryReader(catalog,state)}</section></div><details class="source-notice"><summary>Источник и лицензия</summary><p>${esc(catalog.attribution)}</p><p>Блоки переведены в JSON с исправлением переносов строк. Русские поисковые названия добавлены в приложении и не являются официальным переводом. Каталог содержит ${catalog.monsters.length} блоков SRD, а не весь Monster Manual.</p></details>`}`;
+}

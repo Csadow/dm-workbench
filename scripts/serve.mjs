@@ -1,16 +1,19 @@
+import { createAssistantHandler } from './local-assistant.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname } from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
+const types = { '.json': 'application/json', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 // Serve only application assets, never the repository, local data, or secrets.
-export function createAppServer() {
+export function createAppServer(options = {}) {
+  const assistant = createAssistantHandler(options);
   return createServer(async (req, res) => {
     try {
+      if (await assistant(req, res, new URL(req.url, 'http://localhost').pathname)) return;
       const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\//, '') || 'index.html';
-      if (!['GET', 'HEAD'].includes(req.method) || path.includes('..') || !/^(index\.html|sw\.js|manifest\.webmanifest|app\/[a-z-]+\.(js|css)|assets\/[a-z0-9-]+\.(svg|png))$/.test(path)) {
+      if (!['GET', 'HEAD'].includes(req.method) || path.includes('..') || !/^(index\.html|sw\.js|manifest\.webmanifest|app\/[a-z-]+\.(js|css)|assets\/[a-z0-9-]+\.(svg|png|json))$/.test(path)) {
         res.writeHead(404).end('Not found'); return;
       }
       const data = await readFile(resolve(root, path));

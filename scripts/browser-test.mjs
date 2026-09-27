@@ -7,7 +7,15 @@ import { createAppServer } from './serve.mjs';
 
 const temp = await mkdtemp(join(tmpdir(), 'dmw-browser-'));
 const screenshots = process.env.SCREENSHOT_DIR || temp;
-const server = createAppServer();
+let assistantRequests = [], assistantMode = 'success';
+const server = createAppServer({fetchImpl:async(url,options={})=>{
+  if(url.endsWith('/api/tags'))return Response.json({models:[{name:'qwen3.5:4b',size:3400000000,details:{format:'gguf'}}]});
+  if(url.endsWith('/api/show'))return Response.json({details:{format:'gguf'},capabilities:['completion','thinking']});
+  const body=JSON.parse(options.body);assistantRequests.push(body);
+  if(assistantMode==='wait')await new Promise((resolve,reject)=>{if(options.signal.aborted)return reject(new Error('aborted'));options.signal.addEventListener('abort',()=>reject(new Error('aborted')),{once:true});});
+  if(assistantMode==='fail')return Response.json({error:'test failure'},{status:500});
+  return Response.json({message:{content:'Предложение: Мира просит проверить свет у маяка. Дайте героям выбор — разговор или разведка. [К1]'},done:true});
+}});
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${server.address().port}/`;
 const browser = spawn(process.env.CHROMIUM || 'chromium', ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${temp}/profile`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -37,7 +45,7 @@ async function evaluate(expression, sid = session) {
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
   return result.result.value;
 }
-const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+const click = async selector => {await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);if(selector==='[data-action="campaigns"]')await until(()=>evaluate("!!document.querySelector('.campaign-grid')"),'campaign list rendered');};
 const setValue = (selector, value) => evaluate(`(() => {const el = document.querySelector(${JSON.stringify(selector)}); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input', {bubbles:true})); })()`);
 const waitText = text => until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(text)})`), text);
 async function submit() {
@@ -106,6 +114,17 @@ try {
   await click('[data-action="previous-turn"]'); await until(()=>evaluate("document.querySelector('.current h2').textContent==='Путник'"),'return turn');
   await click('[data-action="save-encounter"]'); await setValue('[name=name]','Засада у маяка'); await submit();
   await waitText('Засада у маяка');
+  await click('[data-view="bestiary"]');
+  await until(()=>evaluate("document.querySelectorAll('.monster-row').length===330"),'official catalogue loaded');
+  await setValue('#monster-search','гоблин');
+  assert.equal(await evaluate("document.querySelectorAll('.monster-row').length"),5);
+  await click('[data-action="monster"][data-id="goblin-warrior"]');
+  assert.equal(await evaluate("document.querySelector('#monster-reader').textContent.includes('Nimble Escape')"),true);
+  await setValue('#monster-quantity','2');await click('[data-action="monster-to-combat"]');await waitText('Добавлено в бой: 2');
+  await screenshot('dmw-bestiary.png');
+  await click('[data-view="combat"]');assert.equal(await evaluate("document.querySelectorAll('.combatant').length"),4);
+  await click('[data-action="undo-battle"]');await until(()=>evaluate("document.querySelectorAll('.combatant').length===3"),'undo second monster');
+  await click('[data-action="undo-battle"]');await until(()=>evaluate("document.querySelectorAll('.combatant').length===2"),'undo first monster');
   await click('[data-view="knowledge"]');
   await click('.entry-card');
   assert.equal(await evaluate("!!document.querySelector('#entry-reader h2')"),true);
@@ -145,6 +164,25 @@ try {
   await click('[data-view="journal"]'); await click('[data-action="new-event"]');
   await setValue('[name="text"]', 'Герои нашли письмо.'); await submit();
   assert.equal(await evaluate("document.body.textContent.includes('Герои нашли письмо.')"), true);
+  // Local assistant UI uses a deterministic local test engine. Real model smoke
+  // testing is separate, to keep CI independent of GPU hardware and downloads.
+  await click('[data-view="assistant"]');await waitText('На устройстве: qwen3.5:4b');
+  await click('[data-action="ai-settings"]');await setValue('[name=instructions]','Предпочитаю короткие сцены и переговоры.');await submit();
+  await setValue('#ai-prompt','Что можно предложить Мире?');
+  await evaluate("document.querySelector('#ai-form').requestSubmit()");
+  await until(()=>evaluate("document.querySelectorAll('.chat-message.assistant').length===1 && !document.querySelector('[data-action=ai-cancel]')"),'assistant reply saved');
+  assert.match(assistantRequests[0].messages[0].content,/короткие сцены и переговоры/);
+  assert.match(assistantRequests[0].messages[0].content,/Мира Вейл/);
+  await click('[data-action="ai-like"]');await waitText('Пример сохранён в памяти стиля');
+  await screenshot('dmw-assistant.png');
+  await setValue('#ai-prompt','Продолжи с учётом моего стиля.');await evaluate("document.querySelector('#ai-form').requestSubmit()");
+  await until(()=>evaluate("document.querySelectorAll('.chat-message.assistant').length===2 && !document.querySelector('[data-action=ai-cancel]')"),'second assistant reply');
+  assert.match(assistantRequests[1].messages[0].content,/Удачный ответ, одобренный мастером/);
+  assistantMode='fail';await setValue('#ai-prompt','Запрос при ошибке');await evaluate("document.querySelector('#ai-form').requestSubmit()");
+  await until(()=>evaluate("!!document.querySelector('#ai-error')?.textContent"),'assistant error visible');
+  assert.equal(await evaluate("document.querySelector('#ai-prompt').value"),'Запрос при ошибке');
+  assistantMode='wait';await setValue('#ai-prompt','Остановленный запрос');await evaluate("document.querySelector('#ai-form').requestSubmit()");
+  await until(()=>assistantRequests.length===4,'pending generation');await click('[data-action="ai-cancel"]');await waitText('Запрос остановлен.');assistantMode='success';
   // Real PCM audio, native browser playback, mixing and scene recall.
   const wav=Buffer.alloc(44+8000*2*2);
   wav.write('RIFF'); wav.writeUInt32LE(wav.length-8,4); wav.write('WAVEfmt ',8); wav.writeUInt32LE(16,16);
@@ -181,6 +219,7 @@ try {
   const filename = await until(async () => (await readdir(temp)).find(p => p.endsWith('.dmw.json')), 'export download');
   const exported = JSON.parse(await readFile(join(temp, filename), 'utf8'));
   assert.equal(exported.campaign.sessions.length, 2);
+  assert.equal(exported.campaign.assistant.messages.filter(m=>m.role==='assistant').length,2);
   assert.equal(exported.assets.length,3); assert.equal(exported.campaign.encounters.length,1);
   assert.equal(Buffer.from(exported.assets[0].base64,'base64').length,wav.length);
   assert.equal(exported.campaign.entries.length, 5); assert.equal(exported.campaign.events.length, 2);
@@ -208,6 +247,10 @@ try {
   await newPage(true);
   assert.equal(await evaluate("document.querySelectorAll('.campaign-card').length"), 3);
   await click(`[data-action="open"][data-id="${copy.id}"]`);
+  await click('[data-view="bestiary"]');await until(()=>evaluate("document.querySelectorAll('.monster-row').length===330"),'catalogue available offline');
+  await click('[data-view="assistant"]');await until(()=>evaluate("document.querySelector('#ai-connection').textContent.includes('недоступен')"),'assistant unavailable without local server');
+  assert.equal(await evaluate("document.querySelectorAll('.chat-message.assistant').length"),2);
+  assert.equal(await evaluate("document.querySelector('.style-panel').textContent.includes('короткие сцены и переговоры')"),true);
   await click('[data-view="sound"]');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('audio')).length"),0,'no autoplay after cold start');
   await click('[data-action="play-mood"]');
@@ -237,9 +280,9 @@ try {
   await click(`[data-action="open"][data-id="${legacy.id}"]`); await click('[data-view="combat"]');
   assert.equal(await evaluate("document.querySelector('.current .health strong').textContent"),'19');
   await click('[data-action="next-turn"]'); await until(()=>evaluate("!document.body.classList.contains('saving')"),'migrated save');
-  assert.equal(await evaluate("(async()=> (await (await import('./app/storage.js')).openDatabase()).version)()"),2);
+  assert.equal(await evaluate("(async()=> (await (await import('./app/storage.js')).openDatabase()).version)()"),3);
   assert.deepEqual(exceptions, []);
-  console.log('PASS: audio playback/mixing/scenes/offline restore, IDB v1 upgrade, timed effects, inline damage, creature transfer, encounter backups, UI creation, isolated campaigns, search/XSS, combat/undo, sessions/journal, keyboard search, failed-write recovery, real export/import, invalid import, concurrent writes, cold offline launch with origin stopped, offline persistence, archive, 1024px layout.');
+  console.log('PASS: official offline bestiary, assistant context/style/history/errors/cancel, audio playback/mixing/scenes/offline restore, IDB v1 upgrade, timed effects, inline damage, creature transfer, encounter backups, UI creation, isolated campaigns, search/XSS, combat/undo, sessions/journal, keyboard search, failed-write recovery, real export/import, invalid import, concurrent writes, cold offline launch with origin stopped, offline persistence, archive, 1024px layout.');
   console.log(`Screenshots: ${screenshots}`);
 } catch (error) {
   console.error(error);

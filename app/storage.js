@@ -1,14 +1,16 @@
+import { defaultProfile, validateProfile } from './assistant.js';
 import { validateDocument } from './backup.js';
 import { migrateCampaign, now } from './domain.js';
 let connection;
 export async function openDatabase() {
   if (connection) return connection;
   connection = new Promise((resolve, reject) => {
-    const request = indexedDB.open('dm-workbench', 2);
+    const request = indexedDB.open('dm-workbench', 3);
     let blocked = false;
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('campaigns')) db.createObjectStore('campaigns', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('preferences')) db.createObjectStore('preferences', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('media')) db.createObjectStore('media', { keyPath: 'id' });
     };
     request.onsuccess = () => {
@@ -110,5 +112,18 @@ export async function loadCampaignBundle(id) {
     };
     tx.oncomplete = () => resolve({ campaign, assets });
     tx.onabort = () => reject(error || tx.error);
+  });
+}
+
+export async function loadProfile() {
+  const db=await openDatabase();
+  return new Promise((resolve,reject)=>{const tx=db.transaction('preferences','readonly'),req=tx.objectStore('preferences').get('assistant');tx.oncomplete=()=>{try{resolve(validateProfile(req.result||defaultProfile()));}catch(e){reject(e);}};tx.onabort=()=>reject(tx.error);});
+}
+export async function saveProfile(profile) {
+  validateProfile(profile); const db=await openDatabase(),next=structuredClone(profile); next.revision++;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction('preferences','readwrite'),store=tx.objectStore('preferences'),req=store.get('assistant'); let reason;
+    req.onsuccess=()=>{if((req.result?.revision||0)!==profile.revision){reason=new Error('Память изменена в другой вкладке. Обновите страницу.');tx.abort();return;}store.put(next);};
+    tx.oncomplete=()=>resolve(next);tx.onabort=()=>reject(reason||tx.error);
   });
 }

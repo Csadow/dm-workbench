@@ -10,7 +10,7 @@ export const uid = () => crypto.randomUUID();
 export const now = () => new Date().toISOString();
 export const emptyBattle = () => ({ combatants: [], round: 1, activeId: null, started: false, history: [] });
 export function createCampaign(name, summary = '') {
-  return { id: uid(), name: name.trim(), summary, system: SYSTEM, rulesSource: 'srd-5.2.1', archived: false, createdAt: now(), updatedAt: now(), revision: 0, schemaVersion: 2, encounters: [], soundboard: emptySoundboard(), entries: [], sessions: [], events: [], battle: emptyBattle() };
+  return { id: uid(), name: name.trim(), summary, system: SYSTEM, rulesSource: 'srd-5.2.1', archived: false, createdAt: now(), updatedAt: now(), revision: 0, schemaVersion: 3, assistant: {messages: []}, encounters: [], soundboard: emptySoundboard(), entries: [], sessions: [], events: [], battle: emptyBattle() };
 }
 export function createEntry(type, name, text = '') {
   return { id: uid(), type, name, text, tags: [], links: [], pinned: false, stats: defaultStats(), status: 'open', updatedAt: now() };
@@ -127,9 +127,10 @@ export function demoCampaign() {
 // Reading never deletes or overwrites an existing campaign.
 export function migrateCampaign(input) {
   const c = structuredClone(input);
-  if (c.schemaVersion === 2) return c;
+  if (c.schemaVersion === 3) return c;
+  if (c.schemaVersion === 2) { c.schemaVersion = 3; c.assistant = {messages: []}; return c; }
   if (c.schemaVersion !== undefined && c.schemaVersion !== 1) throw new Error('Версия данных кампании новее приложения.');
-  c.schemaVersion = 2; c.encounters = []; c.soundboard = emptySoundboard();
+  c.schemaVersion = 3; c.assistant = {messages: []}; c.encounters = []; c.soundboard = emptySoundboard();
   for (const e of c.entries) { e.pinned = false; e.stats = defaultStats(); }
   for (const state of [c.battle, ...c.battle.history]) {
     for (const p of state.combatants) Object.assign(p, { ac: 10, role: 'enemy', initiativeBonus: 0, effects: [], notes: '' });

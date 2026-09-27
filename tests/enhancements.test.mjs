@@ -6,7 +6,7 @@ import { exportCampaign, importBundle, encodeAssets, validateCampaign } from '..
 function legacyCampaign() {
   const c = demoCampaign();
   c.battle = changeBattle(c.battle, {type:'start'});
-  delete c.schemaVersion; delete c.encounters; delete c.soundboard;
+  delete c.assistant; delete c.schemaVersion; delete c.encounters; delete c.soundboard;
   for (const e of c.entries) {delete e.stats; delete e.pinned;}
   for (const state of [c.battle,...c.battle.history]) for(const p of state.combatants) for(const key of ['ac','role','initiativeBonus','effects','notes']) delete p[key];
   return c;

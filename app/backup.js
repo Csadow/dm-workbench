@@ -39,15 +39,20 @@ function battleState(b) {
   check(b.started ? b.combatants.some(c => c.id === b.activeId) : b.activeId === null, 'неверный текущий участник.');
 }
 export function validateCampaign(c) {
-  named(c); str(c.summary, 'описание'); check(c.schemaVersion === 2, 'неизвестная схема данных.');
+  named(c); str(c.summary, 'описание'); check(c.schemaVersion === 3, 'неизвестная схема данных.');
   check(c.system === SYSTEM && c.rulesSource === 'srd-5.2.1', 'эта версия правил пока не поддерживается.');
   check(typeof c.archived === 'boolean', 'неверный статус архива.'); integer(c.revision, 0, Number.MAX_SAFE_INTEGER);
   date(c.createdAt); date(c.updatedAt);
+  check(object(c.assistant), 'нет истории помощника.'); array(c.assistant.messages, 'переписка', 100);
+  for (const m of c.assistant.messages) {
+    check(object(m), 'неверное сообщение.'); id(m.id); check(['user','assistant'].includes(m.role), 'неверная роль сообщения.');
+    str(m.text, 'сообщение', 16000); str(m.model, 'модель', 120); date(m.createdAt); array(m.sources, 'источники', 30); m.sources.forEach(s => str(s, 'источник', 500));
+  }
   array(c.entries, 'записи'); array(c.sessions, 'сессии'); array(c.events, 'события'); array(c.encounters, 'заготовки', 100);
   check(object(c.soundboard), 'нет звуковой панели.');
   array(c.soundboard.tracks, 'аудиофайлы', 100); array(c.soundboard.moods, 'звуковые сцены', 100); volume(c.soundboard.masterVolume);
   const entryIds = new Set(c.entries.map(e => e?.id)); const sessionIds = new Set(c.sessions.map(s => s?.id));
-  const documents = [c, ...c.entries, ...c.sessions, ...c.events, ...c.encounters, ...c.soundboard.tracks, ...c.soundboard.moods];
+  const documents = [c, ...c.assistant.messages, ...c.entries, ...c.sessions, ...c.events, ...c.encounters, ...c.soundboard.tracks, ...c.soundboard.moods];
   unique(documents.map(e => e?.id));
   for (const e of c.entries) {
     named(e); check(Object.hasOwn(TYPES, e.type), 'неверный тип записи.'); check(Object.hasOwn(HOOKS, e.status), 'неверный статус зацепки.');
@@ -118,7 +123,7 @@ function checkAssets(c, assets) {
 }
 export function exportCampaign(campaign, assets = []) {
   validateDocument(campaign); checkAssets(campaign, assets);
-  const text = JSON.stringify({ application: 'dm-workbench', formatVersion: 2, exportedAt: now(), campaign, assets }, null, 2);
+  const text = JSON.stringify({ application: 'dm-workbench', formatVersion: 3, exportedAt: now(), campaign, assets }, null, 2);
   check(new TextEncoder().encode(text).length <= MAX_IMPORT_BYTES, 'копия превышает лимит 100 МБ.');
   return text;
 }
@@ -127,14 +132,15 @@ export function importBundle(text) {
   let data;
   try { data = JSON.parse(text); } catch { throw new Error('Не удалось прочитать JSON. Выберите файл экспорта DM Workbench.'); }
   check(object(data) && data.application === 'dm-workbench', 'неизвестный формат.');
-  check([1, 2].includes(data.formatVersion), 'версия формата не поддерживается. Исходные кампании не изменены.');
+  check([1, 2, 3].includes(data.formatVersion), 'версия формата не поддерживается. Исходные кампании не изменены.');
   date(data.exportedAt);
-  const c = data.formatVersion === 1 ? migrateCampaign(data.campaign) : data.campaign;
+  const c = data.formatVersion < 3 ? migrateCampaign(data.campaign) : data.campaign;
   validateDocument(c);
   const assets = checkAssets(c, data.assets || []);
   const ids = new Map();
   const remap = old => { if (!ids.has(old)) ids.set(old, uid()); return ids.get(old); };
   c.id = remap(c.id);
+  for (const m of c.assistant.messages) m.id = remap(m.id);
   for (const e of [...c.entries, ...c.sessions, ...c.events]) {
     e.id = remap(e.id); e.links = e.links.map(remap);
     if (e.sessionId) e.sessionId = remap(e.sessionId);

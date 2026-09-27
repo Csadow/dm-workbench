@@ -1,16 +1,76 @@
+import { bestiaryPage, bestiaryResults, bestiaryReader, monsterEntry } from './bestiary.js';
+import { MAX_PROFILE_BYTES, defaultProfile, buildRequest, chatMessage, memoryRecord, assistantPage, profileExport, profileImport } from './assistant.js';
 import * as screens from './screens.js';
 import { SoundMixer, prepareAudio } from './audio.js';
 import { esc, icon, button, sectionHead, empty } from './ui.js';
 import { ROLES, SOUND_KINDS, fromEntry, createEncounter, d20, TYPES, HOOKS, SESSION_STATUS, uid, now, createCampaign, createEntry, createSession, createCombatant, changeBattle, removeEntry, demoCampaign } from './domain.js';
-import { listCampaigns, saveCampaign, loadCampaignBundle } from './storage.js';
+import { listCampaigns, saveCampaign, loadCampaignBundle, loadProfile, saveProfile } from './storage.js';
 import { exportCampaign, importBundle, encodeAssets, MAX_IMPORT_BYTES } from './backup.js';
 
 const $ = selector => document.querySelector(selector);
 const dateLabel = value => value ? new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short' }).format(new Date(value)) : 'Дата не выбрана';
 const fullDate = value => new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
-const navItems = [['overview', 'home', 'Обзор'], ['knowledge', 'book', 'База знаний'], ['sessions', 'calendar', 'Сессии'], ['combat', 'sword', 'Бой'], ['journal', 'journal', 'Хроника'], ['sound', 'music', 'Музыка и звуки']];
+const navItems = [['overview', 'home', 'Обзор'], ['knowledge', 'book', 'База знаний'], ['sessions', 'calendar', 'Сессии'], ['combat', 'sword', 'Бой'], ['journal', 'journal', 'Хроника'], ['sound', 'music', 'Музыка и звуки'], ['bestiary', 'book', 'Бестиарий SRD'], ['assistant', 'spark', 'ИИ-помощник']];
 let campaigns = [], activeId = null, view = 'campaigns', query = '', filter = '', busy = false, dirty = false, offlineReady = false, installPrompt;
 let toastTimer, submitting = false;
+let catalog = null, catalogError = '', catalogLoading = null, profile = defaultProfile();
+const bestiaryState = {query:'',type:'',cr:'',sort:'name',selected:''};
+const aiStates = new Map();
+let aiModels = [], aiConnectionError = '', aiChecking = false;
+function aiState(id=activeId) {
+  if (!aiStates.has(id)) aiStates.set(id,{running:false,draft:'',requestError:'',answer:null,controller:null});
+  return aiStates.get(id);
+}
+async function loadBestiary() {
+  if(catalog)return catalog;
+  if(catalogLoading)return catalogLoading;
+  catalogLoading=(async()=>{
+    try {
+      const response=await fetch('./assets/srd-monsters.json'); if(!response.ok)throw new Error();
+      const data=await response.json(); if(data.version!=='5.2.1'||!Array.isArray(data.monsters)||data.monsters.length!==330)throw new Error();
+      catalog=data;catalogError='';return catalog;
+    }catch{catalogError='Не удалось открыть бестиарий. Откройте приложение с работающим локальным сервером, чтобы завершить установку.';return null;}
+    finally{catalogLoading=null;}
+  })();return catalogLoading;
+}
+async function checkAI() {
+  aiChecking=true; if(view==='assistant')render();
+  try {const response=await fetch('./api/ai/status',{signal:AbortSignal.timeout(7000),cache:'no-store'});const data=await response.json();aiModels=data.models||[];aiConnectionError=data.error||(!aiModels.length?'В Ollama ещё нет локальной текстовой модели.':'');}
+  catch{aiModels=[];aiConnectionError='Локальный сервер приложения недоступен. Запустите node scripts/start-local.mjs.';}
+  finally{aiChecking=false;if(view==='assistant')render();}
+}
+function refreshAssistant(id) { if(activeId===id && view==='assistant')render(); }
+async function saveAnswer(id) {
+  const state=aiState(id);if(!state.answer)return;
+  const next=structuredClone(campaigns.find(c=>c.id===id));
+  next.assistant.messages=[...next.assistant.messages,state.answer].slice(-100);
+  await persist(next);state.answer=null;state.draft='';state.requestError='';refreshAssistant(id);
+}
+async function askAssistant(question) {
+  const id=activeId,state=aiState(id);
+  if(state.running||state.answer)return;
+  if(!question.trim()||question.length>3000)throw new Error('Запрос должен содержать от 1 до 3000 символов.');
+  state.running=true;state.requestError='';state.draft=question;state.controller=new AbortController();
+  const signal=state.controller.signal;refreshAssistant(id);
+  try {
+    await loadBestiary(); if(signal.aborted)return;
+    const current=campaigns.find(c=>c.id===id), request=buildRequest(current,profile,question,catalog);
+    const next=structuredClone(current);
+    if(next.assistant.messages.at(-1)?.role!=='user'||next.assistant.messages.at(-1)?.text!==question)next.assistant.messages=[...next.assistant.messages,chatMessage('user',question)].slice(-100);
+    await persist(next);refreshAssistant(id);if(signal.aborted)return;
+    const response=await fetch('./api/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},signal,body:JSON.stringify({model:request.model,messages:request.messages})});
+    let result;try{result=await response.json();}catch{throw new Error('Локальный сервер ИИ недоступен. Перезапустите node scripts/start-local.mjs.');}
+    if(!response.ok)throw new Error(result.error||'Не удалось получить ответ локальной модели.');
+    if(signal.aborted)return;
+    if(typeof result.text!=='string'||!result.text.trim()||result.text.length>16000)throw new Error('Получен неверный ответ модели.');
+    state.answer=chatMessage('assistant',(result.truncated?result.text.slice(0,15800):result.text)+(result.truncated?'\n\n[Ответ достиг лимита длины. Можно попросить продолжить.]':''),result.model,request.sources);
+    await saveAnswer(id);
+  }catch(error){state.requestError=signal.aborted?'Запрос остановлен.':error.message==='Failed to fetch'?'Локальный сервер недоступен. Запустите node scripts/start-local.mjs.':error.message;}
+  finally{state.running=false;state.controller=null;refreshAssistant(id);}
+}
+async function updateProfile(fn) {const next=structuredClone(profile);fn(next);profile=await saveProfile(next);render();}
+function downloadText(text,name) {const url=URL.createObjectURL(new Blob([text],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+
 let selected = '', pinnedOnly = false, tagFilter = '', sort = 'recent';
 const knowledgeState = () => ({query, filter, selected, pinnedOnly, tagFilter, sort});
 const mixer = new SoundMixer(refreshAudio, failure);
@@ -88,15 +148,15 @@ function render() {
   mixer.setCampaign(active());
   const c = active();
   if (!c && view !== 'campaigns' && view !== 'help') view = 'campaigns';
-  const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, sound: soundPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
-  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + ' Данные и установка', 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.2</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
+  const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, bestiary: () => bestiaryPage(catalog,bestiaryState,catalogError), assistant: () => assistantPage(c,profile,{...aiState(),models:aiModels,error:aiConnectionError,loading:aiChecking}), sound: soundPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
+  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + ' Данные и установка', 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.3</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
 }
 function helpPage() {
-  return `${sectionHead('ВАША МАСТЕРСКАЯ', 'Данные и установка', 'Кампании остаются на этом устройстве.')}<div class="overview-grid"><section class="panel"><h2>Работа без интернета</h2><p>Откройте приложение с интернетом и дождитесь сообщения «Готово к работе без сети». После этого заметки, поиск, сессии и бой доступны автономно.</p><p><strong>${offlineReady ? '✓ Приложение готово к работе без сети' : 'Офлайн-подготовка ещё не завершена'}</strong></p>${button('install', 'Установить приложение', 'primary')}<p class="muted">В Chrome или Edge используйте значок установки в адресной строке. Если установка недоступна, работайте в обычной вкладке браузера.</p></section><section class="panel"><h2>Резервная копия</h2><p>Сохраните кампанию в файл после игры. Очистка данных сайта удаляет локальные кампании. Файл экспорта храните отдельно. В него входят загруженные музыка и звуки.</p><p>Импорт добавляет независимую копию. Изменения между устройствами автоматически не объединяются.</p><div class="actions">${active() ? button('export', icon('download') + ' Экспорт кампании', 'primary') : ''}${button('import', icon('upload') + ' Импорт', 'secondary')}</div><hr><p class="muted" id="persistence-status">Можно попросить браузер защитить хранилище от автоматической очистки.</p>${button('persist-storage', 'Защитить локальные данные', 'secondary')}</section></div><section class="panel"><h2>Быстрее с клавиатуры</h2><p><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> — поиск в базе знаний открытой кампании. <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> — сохранить открытый редактор. <kbd>Esc</kbd> — закрыть его; при несохранённых изменениях появится вопрос.</p></section><section class="panel"><h2>Правила и границы прототипа</h2><p>Целевая система — D&D 5.5e (правила 2024 года). Полного справочника правил в прототипе пока нет. Инициативу можно бросить кнопкой d20. Эффекты — напоминания до начала указанного раунда; сопротивления, спасброски и эффекты концентрации решает мастер.</p><p>Тексты записей сохраняются кнопкой «Сохранить». Действия боя сохраняются автоматически. До закрытия редактора можно скопировать свой текст, если запись не удалась.</p></section>`;
+  return `${sectionHead('ВАША МАСТЕРСКАЯ', 'Данные и установка', 'Кампании остаются на этом устройстве.')}<div class="overview-grid"><section class="panel"><h2>Работа без интернета</h2><p>Откройте приложение с интернетом и дождитесь сообщения «Готово к работе без сети». После этого заметки, поиск, сессии и бой доступны автономно.</p><p><strong>${offlineReady ? '✓ Приложение готово к работе без сети' : 'Офлайн-подготовка ещё не завершена'}</strong></p>${button('install', 'Установить приложение', 'primary')}<p class="muted">В Chrome или Edge используйте значок установки в адресной строке. Если установка недоступна, работайте в обычной вкладке браузера.</p></section><section class="panel"><h2>Резервная копия</h2><p>Сохраните кампанию в файл после игры. Очистка данных сайта удаляет локальные кампании. Файл экспорта храните отдельно. В него входят загруженные музыка и звуки.</p><p>Импорт добавляет независимую копию. Изменения между устройствами автоматически не объединяются.</p><div class="actions">${active() ? button('export', icon('download') + ' Экспорт кампании', 'primary') : ''}${button('import', icon('upload') + ' Импорт', 'secondary')}</div><hr><p class="muted" id="persistence-status">Можно попросить браузер защитить хранилище от автоматической очистки.</p>${button('persist-storage', 'Защитить локальные данные', 'secondary')}</section></div><section class="panel"><h2>Быстрее с клавиатуры</h2><p><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> — поиск в базе знаний открытой кампании. <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> — сохранить открытый редактор. <kbd>Esc</kbd> — закрыть его; при несохранённых изменениях появится вопрос.</p></section><section class="panel"><h2>Правила и границы прототипа</h2><p>Целевая система — D&D 5.5e (правила 2024 года). Полного справочника правил в прототипе пока нет. В «Бестиарии SRD» доступны 330 готовых существ с исходными английскими блоками характеристик. Инициативу можно бросить кнопкой d20. Эффекты — напоминания до начала указанного раунда; сопротивления, спасброски и эффекты концентрации решает мастер.</p><p>Тексты записей сохраняются кнопкой «Сохранить». Действия боя сохраняются автоматически. До закрытия редактора можно скопировать свой текст, если запись не удалась.</p></section>`;
 }
 function field(label, name, value = '', options = {}) {
   const attrs = `name="${name}" ${options.required ? 'required' : ''} ${options.type === 'number' ? `min="${options.min ?? 0}" max="${options.max ?? 100000}" step="1"` : ''}`;
-  return `<label class="field">${label}${options.area ? `<textarea ${attrs} rows="${options.rows || 6}" maxlength="100000">${esc(value)}</textarea>` : `<input ${attrs} type="${options.type || 'text'}" value="${esc(value)}" maxlength="${options.maxLength || 200}">`}</label>`;
+  return `<label class="field">${label}${options.area ? `<textarea ${attrs} rows="${options.rows || 6}" maxlength="${options.maxLength || 100000}">${esc(value)}</textarea>` : `<input ${attrs} type="${options.type || 'text'}" value="${esc(value)}" maxlength="${options.maxLength || 200}">`}</label>`;
 }
 function selectField(label, name, values, selected) {
   return `<label class="field">${label}<select name="${name}">${Object.entries(values).map(([key, text]) => `<option value="${esc(key)}" ${key === selected ? 'selected' : ''}>${esc(text)}</option>`).join('')}</select></label>`;
@@ -125,7 +185,7 @@ function closeDialog() {
   dirty = false; $('#editor').close();
 }
 $('#editor').addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
-window.addEventListener('beforeunload', event => { if (dirty || busy || submitting) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (dirty || busy || submitting || [...aiStates.values()].some(s=>s.running||s.answer)) { event.preventDefault(); event.returnValue = ''; } });
 function campaignEditor(existing = null) {
   openDialog(existing ? 'Настройки кампании' : 'Новая история', field('Название кампании', 'name', existing?.name, { required: true }) + field('О чём эта история?', 'summary', existing?.summary, { area: true, rows: 4 }) + '<p class="muted tiny">D&D 5.5e · Локальная кампания · Без синхронизации</p>', async data => {
     const name = data.get('name').trim(); if (!name) throw new Error('Введите название кампании.');
@@ -206,7 +266,7 @@ async function exportActive() {
 async function handleAction(el) {
   const action = el.dataset.action, id = el.dataset.id;
   switch (action) {
-    case 'nav': view = el.dataset.view; query = ''; filter = ''; render(); break;
+    case 'nav': view = el.dataset.view; query = ''; filter = ''; render(); if(view==='bestiary'){await loadBestiary();if(view==='bestiary')render();}if(view==='assistant')await checkAI(); break;
     case 'campaigns': view = 'campaigns'; activeId = null; campaigns = await listCampaigns(); render(); break;
     case 'open': activeId = id; view = 'overview'; render(); break;
     case 'help': view = 'help'; render(); break;
@@ -268,8 +328,43 @@ async function handleAction(el) {
         // A completed battle is a boundary: do not undo across its journal entry.
         c.battle = changeBattle(c.battle, { type: 'clear' }); c.battle.history = [];
       }); break;
+    case 'reload-bestiary': await loadBestiary(); render(); break;
+    case 'monster': bestiaryState.selected=id; $('#monster-reader').innerHTML=bestiaryReader(catalog,bestiaryState); $('#monster-list').innerHTML=bestiaryResults(catalog,bestiaryState); break;
+    case 'monster-to-knowledge': {
+      const entry=monsterEntry(catalog,catalog.monsters.find(m=>m.id===id));
+      await mutate(c=>c.entries.push(entry)); selected=entry.id; view='knowledge'; query=''; filter='';tagFilter='';pinnedOnly=false;render();toast('Существо добавлено в базу знаний');break;
+    }
+    case 'monster-to-combat': {
+      const input=$('#monster-quantity'); if(!input.checkValidity()){input.reportValidity();return;}
+      const count=Number(input.value),entry=monsterEntry(catalog,catalog.monsters.find(m=>m.id===id));
+      await mutate(c=>{for(let i=0;i<count;i++){const p=fromEntry(entry);if(count>1)p.name=`${entry.name} ${i+1}`;c.battle=changeBattle(c.battle,{type:'add',combatant:p});}});
+      toast(`Добавлено в бой: ${count}`);break;
+    }
+    case 'ai-check': await checkAI();break;
+    case 'ai-settings':
+      openDialog('Локальная модель и стиль',field('Модель Ollama','model',profile.model,{required:true,maxLength:120})+`<p class="muted tiny">Установлены: ${esc(aiModels.join(', ')||'пока не обнаружены')}. Облачные модели отключены.</p>`+field('Как я веду игру','instructions',profile.instructions,{area:true,rows:7,maxLength:4000})+'<p class="muted tiny">Например: короткие описания, мрачные загадки, решения без боя, последствия выбора игроков. Эти предпочтения общие для всех кампаний.</p>',async data=>{await updateProfile(p=>{p.model=data.get('model').trim();p.instructions=data.get('instructions');});});break;
+    case 'ai-like': {const message=active().assistant.messages.find(m=>m.id===id);await updateProfile(p=>p.memories.push(memoryRecord(`Удачный ответ, одобренный мастером:\n${message.text.slice(0,1850)}`,'example')));toast('Пример сохранён в памяти стиля');break;}
+    case 'ai-memory': case 'ai-edit-memory': case 'ai-feedback': {
+      const existing=action==='ai-edit-memory'?profile.memories.find(m=>m.id===id):null;
+      const message=action==='ai-feedback'?active().assistant.messages.find(m=>m.id===id):null;
+      const content=existing?.text||(message?`Что нужно изменить в будущих ответах:\n\nПример: ${message.text.slice(0,1000)}`:'');
+      openDialog('Память моего стиля',selectField('Как учитывать','kind',{preference:'Предпочтение',example:'Удачный пример',avoid:'Избегать'},existing?.kind||(message?'avoid':'preference'))+field('Что запомнить','text',content,{area:true,required:true,rows:8,maxLength:2000})+'<p class="muted tiny">До 2000 символов. Запись будет учитываться в следующих запросах и доступна для редактирования.</p>',async data=>{const m=memoryRecord(data.get('text'),data.get('kind'));await updateProfile(p=>{p.memories=existing?p.memories.map(x=>x.id===existing.id?{...m,id:existing.id}:x):[...p.memories,m];});});break;
+    }
+    case 'ai-delete-memory': if(confirm('Удалить эту запись памяти стиля?'))await updateProfile(p=>{p.memories=p.memories.filter(m=>m.id!==id);});break;
+    case 'ai-export-profile': downloadText(profileExport(profile),'dm-workbench-style.json');break;
+    case 'ai-import-profile': $('#profile-file').click();break;
+    case 'ai-prompt': aiState().draft=el.dataset.prompt; $('#ai-prompt').value=el.dataset.prompt;$('#ai-prompt').focus();break;
+    case 'ai-cancel': aiState().controller?.abort();break;
+    case 'ai-save-answer': await saveAnswer(activeId);break;
+    case 'ai-clear':
+      if(aiState().running||aiState().answer)throw new Error('Сначала остановите запрос и сохраните полученный ответ.');
+      if(confirm('Очистить переписку этой кампании? Память стиля останется.'))await mutate(c=>{c.assistant.messages=[];});break;
+    case 'ai-use-note': {
+      const message=active().assistant.messages.find(m=>m.id===id);
+      openDialog('Сохранить предложение помощника',field('Название заметки','name','Идея для сессии',{required:true})+field('Текст','text',message.text,{area:true,rows:10}),async data=>{await mutate(c=>{const e=createEntry('note',data.get('name').trim(),data.get('text'));e.tags=['предложение ИИ'];c.entries.push(e);});});break;
+    }
     case 'go-sound': view = 'sound'; render(); break;
-    case 'combat-library': view = 'knowledge'; filter = ''; query = ''; render(); toast('Откройте персонажа или существо и нажмите «Добавить в бой».'); break;
+    case 'combat-library': view = 'bestiary'; render(); await loadBestiary(); if(view==='bestiary')render(); break;
     case 'entry-to-combat': await mutate(c => { c.battle = changeBattle(c.battle,{type:'add',combatant:fromEntry(c.entries.find(e=>e.id===id))}); }); toast('Участник добавлен в бой'); break;
     case 'roll-one': case 'roll-enemies': await mutate(c => { c.battle = changeBattle(c.battle,{type:'roll',values:Object.fromEntries(c.battle.combatants.filter(p=>action==='roll-one'?p.id===id:p.role==='enemy').map(p=>[p.id,d20()+p.initiativeBonus]))}); }); break;
     case 'sort-battle': await mutate(c=>{c.battle=changeBattle(c.battle,{type:'sort'});}); break;
@@ -327,7 +422,13 @@ document.addEventListener('keydown', event => {
     event.preventDefault(); view = 'knowledge'; render(); $('#search').focus();
   }
 });
+document.addEventListener('submit',event=>{
+  if(event.target.id!=='ai-form')return;event.preventDefault();if(busy||submitting)return;
+  askAssistant($('#ai-prompt').value.trim()).catch(failure);
+});
 document.addEventListener('input', event => {
+  if(event.target.id==='monster-search'){bestiaryState.query=event.target.value;$('#monster-list').innerHTML=bestiaryResults(catalog,bestiaryState);}
+  if(event.target.id==='ai-prompt')aiState().draft=event.target.value;
   if (event.target.dataset.volume) {
     const id=event.target.dataset.volume, value=Number(event.target.value)/100;
     if(id==='master') mixer.setMaster(value); else mixer.setVolume(id,value);
@@ -337,6 +438,7 @@ document.addEventListener('input', event => {
 });
 document.addEventListener('change', event => {
   const el=event.target;
+  if(['monster-type','monster-cr','monster-sort'].includes(el.id)){bestiaryState[el.id.slice(8)]=el.value;$('#monster-list').innerHTML=bestiaryResults(catalog,bestiaryState);}
   if(el.id==='type-filter') filter=el.value;
   if(el.id==='tag-filter') tagFilter=el.value;
   if(el.id==='entry-sort') sort=el.value;
@@ -354,10 +456,19 @@ $('#import-file').addEventListener('change', async event => {
     const {campaign:c,assets} = importBundle(await file.text()); await persist(c, true, {assets}); activeId = c.id; view = 'overview'; render(); toast('Кампания импортирована как отдельная копия');
   } catch (error) { failure(error); }
 });
+$('#profile-file').addEventListener('change',async event=>{
+  const file=event.target.files[0];event.target.value='';if(!file)return;
+  try{
+    if(file.size>MAX_PROFILE_BYTES)throw new Error('Файл памяти больше 500 КБ.');
+    const imported=profileImport(await file.text());
+    if(!confirm('Заменить общую память стиля данными из файла?'))return;
+    profile=await saveProfile({...imported,revision:profile.revision});render();toast('Память стиля восстановлена');
+  }catch(error){failure(error);}
+});
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; });
 for (const name of ['online', 'offline']) window.addEventListener(name, () => { if ($('#save-label')) $('#save-label').textContent = navigator.onLine ? 'Локальное хранение' : 'Без интернета'; });
 async function boot() {
-  try { campaigns = await listCampaigns(); render(); }
+  try { [campaigns,profile] = await Promise.all([listCampaigns(),loadProfile()]); render(); }
   catch (error) {
     $('#app').innerHTML = `<main class="loading"><h1>Не удалось открыть хранилище</h1><p>${esc(error.message)}</p><p>Разрешите хранение данных сайта в браузере и обновите страницу.</p><button onclick="location.reload()">Повторить</button></main>`; return;
   }
