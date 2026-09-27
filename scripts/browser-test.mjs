@@ -59,9 +59,9 @@ async function screenshot(name) {
   const result = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   await writeFile(join(screenshots, name), Buffer.from(result.data, 'base64'));
 }
-async function upload(path) {
+async function upload(path, selector = '#import-file') {
   const { root } = await command('DOM.getDocument');
-  const { nodeId } = await command('DOM.querySelector', { nodeId: root.nodeId, selector: '#import-file' });
+  const { nodeId } = await command('DOM.querySelector', { nodeId: root.nodeId, selector });
   await command('DOM.setFileInputFiles', { nodeId, files: [path] });
 }
 try {
@@ -91,6 +91,33 @@ try {
   await screenshot('dmw-combat.png');
   await click('[data-action="undo-battle"]');
   await until(() => evaluate("document.querySelector('.current h2').textContent === 'Путник'"), 'undo turn');
+  // Inline arithmetic, timed reminders, and reusable encounters.
+  await setValue('.current [data-hp-input]', '7');
+  await setValue('.current [data-damage-scale]', '0.5');
+  await click('.current [data-action="damage"]');
+  await until(()=>evaluate("document.querySelector('.current .health strong').textContent==='16'"),'half damage rounded down');
+  await click('[data-action="undo-battle"]');
+  await until(()=>evaluate("document.querySelector('.current .health strong').textContent==='19'"),'undo inline damage');
+  await click('.current [data-action="add-effect"]');
+  await setValue('[name=name]','Ослепление'); await setValue('[name=rounds]','1'); await submit();
+  await click('[data-action="next-turn"]'); await until(()=>evaluate("!document.body.classList.contains('saving')"),'turn saved');
+  await click('[data-action="next-turn"]'); await until(()=>evaluate("!!document.querySelector('.effect-chip.expired')"),'effect expiry');
+  await click('[data-action="previous-turn"]'); await until(()=>evaluate("!document.querySelector('.effect-chip.expired')"),'effect previous round');
+  await click('[data-action="previous-turn"]'); await until(()=>evaluate("document.querySelector('.current h2').textContent==='Путник'"),'return turn');
+  await click('[data-action="save-encounter"]'); await setValue('[name=name]','Засада у маяка'); await submit();
+  await waitText('Засада у маяка');
+  await click('[data-view="knowledge"]');
+  await click('.entry-card');
+  assert.equal(await evaluate("!!document.querySelector('#entry-reader h2')"),true);
+  await click('[data-action="pin-entry"]'); await waitText('★ Закреплено');
+  const miraId=original.entries[0].id;
+  await click(`[data-action="entry"][data-id="${miraId}"]`);
+  await click('[data-action="edit-entry"]'); await setValue('[name=ac]','17'); await setValue('[name=maxHp]','35'); await setValue('[name=role]','ally'); await submit();
+  await screenshot('dmw-knowledge.png');
+  await click('[data-action="entry-to-combat"]'); await waitText('Участник добавлен в бой');
+  await click('[data-view="combat"]');
+  assert.equal(await evaluate("document.querySelectorAll('.combatant').length"),3);
+  await click('[data-action="undo-battle"]'); await until(()=>evaluate("document.querySelectorAll('.combatant').length===2"),'undo creature copy');
   await click('[data-view="knowledge"]');
   await click('[data-action="new-entry"]');
   await setValue('[name="name"]', 'Письмо <img src=x onerror=alert(1)>');
@@ -118,18 +145,54 @@ try {
   await click('[data-view="journal"]'); await click('[data-action="new-event"]');
   await setValue('[name="text"]', 'Герои нашли письмо.'); await submit();
   assert.equal(await evaluate("document.body.textContent.includes('Герои нашли письмо.')"), true);
+  // Real PCM audio, native browser playback, mixing and scene recall.
+  const wav=Buffer.alloc(44+8000*2*2);
+  wav.write('RIFF'); wav.writeUInt32LE(wav.length-8,4); wav.write('WAVEfmt ',8); wav.writeUInt32LE(16,16);
+  wav.writeUInt16LE(1,20); wav.writeUInt16LE(1,22); wav.writeUInt32LE(8000,24); wav.writeUInt32LE(16000,28);
+  wav.writeUInt16LE(2,32); wav.writeUInt16LE(16,34); wav.write('data',36); wav.writeUInt32LE(wav.length-44,40);
+  for(let i=0;i<(wav.length-44)/2;i++) wav.writeInt16LE(Math.round(Math.sin(i/8000*Math.PI*2*220)*1000),44+i*2);
+  const audioPath=join(temp,'tone.wav'); await writeFile(audioPath,wav);
+  await click('[data-view="sound"]');
+  for(const [name,kind] of [['Ночной лес','ambience'],['Путешествие','music'],['Гром','effect']]) {
+    await click('[data-action="new-sound"]'); await setValue('[name=name]',name); await setValue('[name=kind]',kind);
+    if(kind==='effect') await click('[name=loop]');
+    await upload(audioPath,'[name=audio]'); await submit();
+  }
+  const sound=await evaluate("(async()=> (await (await import('./app/storage.js')).listCampaigns())[0].soundboard)()");
+  const music=sound.tracks.find(t=>t.kind==='music'), ambience=sound.tracks.find(t=>t.kind==='ambience'), effect=sound.tracks.find(t=>t.kind==='effect');
+  for(const track of [music,ambience]) await click(`[data-track-card="${track.id}"] [data-action="play-sound"]`);
+  await until(()=>evaluate("Array.from(document.querySelectorAll('audio')).filter(a=>!a.paused && a.currentTime>0.1).length===2"),'two native audio layers advancing');
+  await setValue('[data-volume="master"]','50');
+  await evaluate("document.querySelector('[data-volume=master]').dispatchEvent(new Event('change',{bubbles:true}))");
+  await until(()=>evaluate("!document.body.classList.contains('saving')"),'master saved');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('audio')).filter(a=>!a.paused).every(a=>Math.abs(a.volume-.35)<.001)"),true);
+  await click('[data-action="save-mood"]'); await setValue('[name=name]','Лесная дорога'); await submit();
+  await screenshot('dmw-sound.png');
+  await click('[data-view="combat"]');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('audio')).filter(a=>!a.paused).length"),2);
+  await click(`.audio-dock [data-action="play-sound"][data-id="${effect.id}"]`);
+  await until(()=>evaluate("Array.from(document.querySelectorAll('audio')).filter(a=>!a.paused).length===3"),'one shot plays with music');
+  await until(()=>evaluate("Array.from(document.querySelectorAll('audio')).filter(a=>!a.paused).length===2"),'one shot ends without stopping music');
+  await click('[data-action="stop-audio"]');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('audio')).every(a=>a.paused)"),true);
+  await click('[data-view="sound"]'); await click('[data-action="play-mood"]');
+  await until(()=>evaluate("Array.from(document.querySelectorAll('audio')).filter(a=>!a.paused).length===2"),'scene recalled');
   await click('[data-action="export"]');
   const filename = await until(async () => (await readdir(temp)).find(p => p.endsWith('.dmw.json')), 'export download');
   const exported = JSON.parse(await readFile(join(temp, filename), 'utf8'));
   assert.equal(exported.campaign.sessions.length, 2);
+  assert.equal(exported.assets.length,3); assert.equal(exported.campaign.encounters.length,1);
+  assert.equal(Buffer.from(exported.assets[0].base64,'base64').length,wav.length);
   assert.equal(exported.campaign.entries.length, 5); assert.equal(exported.campaign.events.length, 2);
-  await click('[data-action="campaigns"]'); await click('[data-action="new-campaign"]');
+  await click('[data-action="campaigns"]'); assert.equal(await evaluate("Array.from(document.querySelectorAll('audio')).every(a=>a.paused)"),true); await click('[data-action="new-campaign"]');
   await setValue('[name="name"]', 'Вторая кампания'); await submit();
   await click('[data-view="knowledge"]'); assert.equal(await evaluate("document.querySelectorAll('.entry-card').length"), 0);
   await upload(join(temp, filename)); await waitText('Кампания импортирована как отдельная копия');
   records = await evaluate("(async()=> (await import('./app/storage.js')).listCampaigns())()");
   assert.equal(records.length, 3);
   const copy = records.find(c => c.name.endsWith('— копия'));
+  assert.equal(copy.soundboard.tracks.length,3);
+  assert.notEqual(copy.soundboard.tracks[0].assetId,sound.tracks[0].assetId);
   assert.notEqual(copy.id, original.id); assert.equal(copy.battle.combatants[0].hp, 19); assert.equal(copy.entries.length, 5);
   const invalid = join(temp, 'invalid.json'); await writeFile(invalid, '{"application":"dm-workbench","formatVersion":999}');
   await upload(invalid); await waitText('версия формата не поддерживается');
@@ -144,6 +207,12 @@ try {
   await command('Target.closeTarget', { targetId }, null);
   await newPage(true);
   assert.equal(await evaluate("document.querySelectorAll('.campaign-card').length"), 3);
+  await click(`[data-action="open"][data-id="${copy.id}"]`);
+  await click('[data-view="sound"]');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('audio')).length"),0,'no autoplay after cold start');
+  await click('[data-action="play-mood"]');
+  await until(()=>evaluate("Array.from(document.querySelectorAll('audio')).filter(a=>!a.paused && a.currentTime>0.1).length===2"),'imported audio plays offline');
+  await click('[data-action="campaigns"]');
   await click(`[data-action="open"][data-id="${original.id}"]`);
   await click('[data-view="combat"]');
   assert.equal(await evaluate("document.querySelector('.current h2').textContent"), 'Путник');
@@ -159,11 +228,23 @@ try {
   await click('[data-action="campaigns"]');
   await click(`[data-action="archive"][data-id="${original.id}"]`);
   await until(() => evaluate("document.querySelector('.archive')?.textContent.includes('Тайны Тихой гавани')"), 'archive saved');
+  // Upgrade a real version-one IndexedDB in the isolated test profile.
+  const legacy=structuredClone(original); delete legacy.schemaVersion; delete legacy.soundboard; delete legacy.encounters;
+  for(const entry of legacy.entries) {delete entry.stats; delete entry.pinned;}
+  for(const state of [legacy.battle,...legacy.battle.history]) for(const p of state.combatants) for(const key of ['ac','role','initiativeBonus','effects','notes']) delete p[key];
+  await evaluate(`(async()=>{(await (await import('./app/storage.js')).openDatabase()).close(); await new Promise((resolve,reject)=>{const r=indexedDB.deleteDatabase('dm-workbench');r.onsuccess=resolve;r.onerror=()=>reject(r.error);}); await new Promise((resolve,reject)=>{const r=indexedDB.open('dm-workbench',1);r.onupgradeneeded=()=>r.result.createObjectStore('campaigns',{keyPath:'id'});r.onsuccess=()=>{const db=r.result,tx=db.transaction('campaigns','readwrite');tx.objectStore('campaigns').put(${JSON.stringify(legacy)});tx.oncomplete=()=>{db.close();resolve();};tx.onabort=()=>reject(tx.error);};});})()`);
+  await command('Page.reload'); await until(()=>evaluate("document.querySelectorAll('.campaign-card').length===1"),'legacy database upgrade');
+  await click(`[data-action="open"][data-id="${legacy.id}"]`); await click('[data-view="combat"]');
+  assert.equal(await evaluate("document.querySelector('.current .health strong').textContent"),'19');
+  await click('[data-action="next-turn"]'); await until(()=>evaluate("!document.body.classList.contains('saving')"),'migrated save');
+  assert.equal(await evaluate("(async()=> (await (await import('./app/storage.js')).openDatabase()).version)()"),2);
   assert.deepEqual(exceptions, []);
-  console.log('PASS: UI creation, isolated campaigns, search/XSS, combat/undo, sessions/journal, keyboard search, failed-write recovery, real export/import, invalid import, concurrent writes, cold offline launch with origin stopped, offline persistence, archive, 1024px layout.');
+  console.log('PASS: audio playback/mixing/scenes/offline restore, IDB v1 upgrade, timed effects, inline damage, creature transfer, encounter backups, UI creation, isolated campaigns, search/XSS, combat/undo, sessions/journal, keyboard search, failed-write recovery, real export/import, invalid import, concurrent writes, cold offline launch with origin stopped, offline persistence, archive, 1024px layout.');
   console.log(`Screenshots: ${screenshots}`);
 } catch (error) {
-  console.error(error); console.error(stderr.slice(-2000)); process.exitCode = 1;
+  console.error(error);
+  try { console.error(await evaluate("({toast:document.querySelector('#toast')?.textContent, players:Array.from(document.querySelectorAll('audio')).map(a=>({paused:a.paused,time:a.currentTime,error:a.error?.message,ready:a.readyState,src:a.src})),activation:navigator.userActivation.hasBeenActive})")); } catch {}
+  console.error(stderr.slice(-2000)); process.exitCode = 1;
 } finally {
   for (const entry of pending.values()) clearTimeout(entry.timer);
   socket?.close(); browser.kill('SIGTERM'); server.close();

@@ -1,31 +1,31 @@
-import { TYPES, HOOKS, SESSION_STATUS, uid, now, createCampaign, createEntry, createSession, createCombatant, changeBattle, removeEntry, demoCampaign } from './domain.js';
-import { listCampaigns, saveCampaign } from './storage.js';
-import { exportCampaign, importCampaign, MAX_IMPORT_BYTES } from './backup.js';
+import * as screens from './screens.js';
+import { SoundMixer, prepareAudio } from './audio.js';
+import { esc, icon, button, sectionHead, empty } from './ui.js';
+import { ROLES, SOUND_KINDS, fromEntry, createEncounter, d20, TYPES, HOOKS, SESSION_STATUS, uid, now, createCampaign, createEntry, createSession, createCombatant, changeBattle, removeEntry, demoCampaign } from './domain.js';
+import { listCampaigns, saveCampaign, loadCampaignBundle } from './storage.js';
+import { exportCampaign, importBundle, encodeAssets, MAX_IMPORT_BYTES } from './backup.js';
 
 const $ = selector => document.querySelector(selector);
-const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const paths = {
-  dice: '<path d="m12 2 9 5v10l-9 5-9-5V7Z M12 2l5 8-5 12-5-12ZM3 7l4 3h10l4-3M3 17l9-2 9 2M7 10l5 5 5-5"/>',
-  home: '<path d="m3 10 9-7 9 7v11h-6v-7H9v7H3Z"/>',
-  book: '<path d="M12 5v16M3 3c4-1 6 0 9 2 3-2 5-3 9-2v16c-4-1-6 0-9 2-3-2-5-3-9-2Z"/>',
-  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 2v6m10-6v6M3 11h18m-13 4h3"/>',
-  sword: '<path d="m4 3 4 1 12 12-4 4L4 8Zm-1 16 4-4m10-12-4 1-3 3m7 4 3-3 1-5M3 15l6 6m6-6 6 6"/>',
-  journal: '<path d="M5 3h14v18H5ZM2 7h5m-5 5h5m-5 5h5m4-10h6m-6 5h6m-6 5h4"/>',
-  folder: '<path d="M3 5h7l2 3h9v12H3Z"/>',
-  arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
-  plus: '<path d="M12 4v16M4 12h16"/>',
-  download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
-  upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
-  search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',
-  settings: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
-};
-const icon = name => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.book}</svg>`;
-const button = (action, label, cls = '', id = '') => `<button type="button" class="${cls}" data-action="${action}"${id ? ` data-id="${esc(id)}"` : ''}>${label}</button>`;
 const dateLabel = value => value ? new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short' }).format(new Date(value)) : 'Дата не выбрана';
 const fullDate = value => new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
-const navItems = [['overview', 'home', 'Обзор'], ['knowledge', 'book', 'База знаний'], ['sessions', 'calendar', 'Сессии'], ['combat', 'sword', 'Бой'], ['journal', 'journal', 'Хроника']];
+const navItems = [['overview', 'home', 'Обзор'], ['knowledge', 'book', 'База знаний'], ['sessions', 'calendar', 'Сессии'], ['combat', 'sword', 'Бой'], ['journal', 'journal', 'Хроника'], ['sound', 'music', 'Музыка и звуки']];
 let campaigns = [], activeId = null, view = 'campaigns', query = '', filter = '', busy = false, dirty = false, offlineReady = false, installPrompt;
-let toastTimer;
+let toastTimer, submitting = false;
+let selected = '', pinnedOnly = false, tagFilter = '', sort = 'recent';
+const knowledgeState = () => ({query, filter, selected, pinnedOnly, tagFilter, sort});
+const mixer = new SoundMixer(refreshAudio, failure);
+function refreshAudio() {
+  const c = active();
+  if ($('#audio-dock-root')) $('#audio-dock-root').innerHTML = screens.audioDock(c, mixer);
+  for (const track of c?.soundboard.tracks || []) {
+    const card = document.querySelector(`[data-track-card="${track.id}"]`);
+    if (!card) continue;
+    card.classList.toggle('playing', mixer.playing(track.id));
+    const slider = card.querySelector('[data-volume]');
+    if (slider && slider !== document.activeElement) { slider.value = Math.round(mixer.level(track.id,track.volume)*100); slider.nextElementSibling.value = slider.value+'%'; }
+    if (track.kind !== 'effect') card.querySelector('[data-action="play-sound"]').textContent = mixer.playing(track.id) ? 'Ⅱ Пауза' : '▶ Воспроизвести';
+  }
+}
 function active() { return campaigns.find(c => c.id === activeId); }
 function toast(text, error = false) {
   clearTimeout(toastTimer); $('#toast').textContent = text; $('#toast').className = `visible ${error ? 'error' : ''}`;
@@ -36,11 +36,11 @@ function failure(error) {
   toast(text, true);
   if ($('#form-error')) $('#form-error').textContent = text;
 }
-async function persist(next, insert = false) {
+async function persist(next, insert = false, options = {}) {
   if (busy) throw new Error('Дождитесь завершения сохранения.');
   busy = true; document.body.classList.add('saving');
   try {
-    const saved = await saveCampaign(next, { insert });
+    const saved = await saveCampaign(next, { insert, ...options });
     campaigns = [saved, ...campaigns.filter(c => c.id !== saved.id)];
     return saved;
   } finally { busy = false; document.body.classList.remove('saving'); }
@@ -50,12 +50,6 @@ async function mutate(fn) {
 }
 function linkedNames(links) {
   return links.map(id => { const entry = active().entries.find(e => e.id === id); return entry ? button('entry', esc(entry.name), 'link-chip', id) : ''; }).join('');
-}
-function sectionHead(eyebrow, title, description, actions = '') {
-  return `<header class="page-heading"><div><p class="eyebrow">${eyebrow}</p><h1>${title}</h1><p class="muted">${description}</p></div><div class="actions">${actions}</div></header>`;
-}
-function empty(title, text, action = '') {
-  return `<div class="empty">${icon('book')}<h3>${title}</h3><p>${text}</p>${action}</div>`;
 }
 function campaignCards(archived) {
   return campaigns.filter(c => c.archived === archived).map(c => `<article class="campaign-card"><div class="card-top"><span class="badge">D&D 5.5e</span><span class="muted tiny">${dateLabel(c.updatedAt)}</span></div><div class="campaign-emblem">${icon('dice')}</div><h2>${esc(c.name)}</h2><p class="muted clamp">${esc(c.summary || 'Каждая история начинается с первого шага.')}</p><div class="card-meta"><span>${c.entries.length} записей</span><span>${c.sessions.length} сессий</span></div><div class="card-bottom">${button('open', `Открыть кампанию ${icon('arrow')}`, 'primary', c.id)}${button('archive', archived ? 'Вернуть' : 'В архив', 'quiet', c.id)}</div></article>`).join('');
@@ -76,13 +70,8 @@ function overviewPage() {
   <div class="overview-grid"><section class="panel session-spotlight"><p class="eyebrow">${session?.status === 'playing' ? 'СЕЙЧАС ЗА СТОЛОМ' : 'СЛЕДУЮЩАЯ СЕССИЯ'}</p><h2>${esc(session?.name || 'Каким будет начало?')}</h2><p class="muted">${session ? dateLabel(session.date) : 'Соберите сцены и нужные материалы в одном месте.'}</p>${session ? `<p class="preline clamp">${esc(session.plan || 'Добавьте план, чтобы не упустить главное.')}</p>` : ''}<div class="actions">${button(session ? 'session' : 'new-session', session ? 'Открыть подготовку ' + icon('arrow') : icon('plus') + ' Подготовить сессию', 'primary', session?.id || '')}${button('go-combat', icon('sword') + ' К бою', 'secondary')}</div></section><section class="panel"><div class="section-title"><h2>Нити сюжета</h2>${button('new-hook', icon('plus') + '<span class=sr-only>Новая зацепка</span>', 'icon-button')}</div>${hooks.slice(0, 4).map(e => `<button class="list-item" data-action="entry" data-id="${e.id}"><span class="dot amber"></span><span><strong>${esc(e.name)}</strong><small>${HOOKS[e.status]}</small></span>${icon('arrow')}</button>`).join('') || '<p class="muted">Добавьте вопрос, тайну или обещание, к которым группа ещё вернётся.</p>'}</section></div>
   <div class="overview-grid"><section class="panel"><div class="section-title"><h2>Последние события</h2>${button('new-event', 'Записать событие', 'text-button')}</div>${eventList(c.events.slice(-3).reverse()) || '<p class="muted">Решения игроков становятся историей здесь.</p>'}</section><section class="panel"><p class="eyebrow">ПОД РУКОЙ</p><h2>Дайте миру детали</h2><p class="muted">Цель персонажа, странная примета места, неожиданный союзник.</p><div class="quick-grid">${button('new-npc', icon('book') + ' Персонаж', 'secondary')}${button('new-location', icon('folder') + ' Место', 'secondary')}${button('new-note', icon('journal') + ' Заметка', 'secondary')}</div></section></div>`;
 }
-function knowledgePage() {
-  return `${sectionHead('БИБЛИОТЕКА КАМПАНИИ', 'База знаний', 'У каждого места есть история. У каждого персонажа — причина.', button('new-entry', icon('plus') + ' Добавить запись', 'primary'))}<div class="search-row"><label class="search">${icon('search')}<input id="search" type="search" placeholder="Найти по названию, тексту или тегам…" aria-label="Поиск в базе знаний" value="${esc(query)}"></label><select id="type-filter" aria-label="Тип записи"><option value="">Все типы</option>${Object.entries(TYPES).map(([key, label]) => `<option value="${key}" ${key === filter ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div id="entries" class="entry-grid">${entriesList()}</div>`;
-}
-function entriesList() {
-  const entries = active().entries.filter(e => (!filter || e.type === filter) && `${e.name} ${e.text} ${e.tags.join(' ')}`.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')));
-  return entries.map(e => `<button class="entry-card" data-action="entry" data-id="${e.id}"><span class="type-icon type-${e.type}">${icon(e.type === 'location' ? 'folder' : e.type === 'note' ? 'journal' : 'book')}</span><span class="badge">${TYPES[e.type]}</span><h2>${esc(e.name)}</h2><p class="muted clamp">${esc(e.text || 'История этой записи ещё не написана.')}</p><div class="tags">${e.tags.map(t => `<span>#${esc(t)}</span>`).join('')}${e.type === 'hook' ? `<span>${HOOKS[e.status]}</span>` : ''}</div></button>`).join('') || empty(query || filter ? 'Ничего не найдено' : 'Мир начинается с деталей', query || filter ? 'Попробуйте другой запрос или тип записи.' : 'Создайте первого персонажа, место или заметку.', !query && !filter ? button('new-entry', 'Добавить запись', 'primary') : '');
-}
+function knowledgePage() { return screens.knowledgePage(active(), knowledgeState()); }
+function entriesList() { return screens.entriesList(active(), knowledgeState()); }
 function sessionsPage() {
   return `${sectionHead('ПОДГОТОВКА И ИГРА', 'Ваши сессии', 'План — отправная точка. Историю напишет ваша группа.', button('new-session', icon('plus') + ' Новая сессия', 'primary'))}<div class="session-list">${active().sessions.map((s, i) => `<article class="panel session-row"><div class="session-number">${String(i + 1).padStart(2, '0')}</div><div class="grow"><span class="badge">${SESSION_STATUS[s.status]}</span><h2>${esc(s.name)}</h2><p class="muted">${dateLabel(s.date)} · ${s.links.length} связанных материалов</p><p class="clamp">${esc(s.status === 'done' ? s.recap : s.plan)}</p></div>${button('session', 'Открыть ' + icon('arrow'), 'secondary', s.id)}</article>`).join('') || empty('Первая встреча впереди', 'Запишите начало, возможные сцены и вопросы для игроков.', button('new-session', 'Подготовить сессию', 'primary'))}</div>`;
 }
@@ -92,22 +81,18 @@ function eventList(events) {
 function journalPage() {
   return `${sectionHead('ПАМЯТЬ ВАШЕГО МИРА', 'Хроника', 'Что решили герои. Кого встретили. Что изменилось навсегда.', button('new-event', icon('plus') + ' Записать событие', 'primary'))}<section class="panel">${eventList([...active().events].reverse()) || empty('Всё ещё впереди', 'Сохраняйте короткие факты во время игры, а после связывайте их с персонажами и местами.')}</section>`;
 }
-function combatPage() {
-  const b = active().battle;
-  return `${sectionHead('ЗА ИГРОВЫМ СТОЛОМ', 'Бой', 'Следите за ходами. Оставьте внимание на истории.', button('new-combatant', icon('plus') + ' Участник', 'primary'))}
-  <div class="combat-toolbar"><div><span class="eyebrow">${b.started ? 'РАУНД' : 'ПОДГОТОВКА'}</span><strong>${b.started ? b.round : 'Расставьте участников'}</strong></div><div class="actions">${b.started ? button('previous-turn', '← Назад', 'secondary') + button('next-turn', 'Следующий ход ' + icon('arrow'), 'primary') : button('start-battle', 'Начать бой', 'primary')}${button('undo-battle', 'Отменить', 'secondary')}${button('clear-battle', 'Завершить', 'quiet')}</div></div>
-  <p class="muted tiny">Порядок при равной инициативе можно изменить стрелками. Новый участник во время боя добавляется в конец очереди.</p>
-  <div class="combatants">${b.combatants.map((c, i) => `<article class="combatant ${b.activeId === c.id ? 'current' : ''}"><div class="initiative"><span>Иниц.</span><strong>${c.initiative}</strong></div><div class="combatant-name"><span class="tiny ${b.activeId === c.id ? 'turn-label' : 'muted'}">${b.activeId === c.id ? 'СЕЙЧАС ХОДИТ' : `УЧАСТНИК ${i + 1}`}</span><h2>${esc(c.name)}</h2><p class="muted tiny">${esc(c.conditions || 'Без состояний')}${c.concentration ? ' · Концентрация' : ''}</p></div><div class="health"><span><strong>${c.hp}</strong> / ${c.maxHp} HP${c.tempHp ? ` <small>+${c.tempHp} врем.</small>` : ''}</span><div class="health-track"><i style="width:${Math.round(c.hp / c.maxHp * 100)}%"></i></div></div><div class="actions combat-actions">${button('damage', '− Урон', 'damage', c.id)}${button('heal', '+ Лечение', 'healing', c.id)}${button('edit-combatant', 'Править', 'quiet', c.id)}<button class="icon-button" data-action="move-up" data-id="${c.id}" aria-label="Поднять ${esc(c.name)} в очереди" ${i === 0 ? 'disabled' : ''}>↑</button><button class="icon-button" data-action="move-down" data-id="${c.id}" aria-label="Опустить ${esc(c.name)} в очереди" ${i === b.combatants.length - 1 ? 'disabled' : ''}>↓</button></div></article>`).join('') || empty('Соберите участников встречи', 'Добавьте героев и противников. Карта для ведения боя не обязательна.', button('new-combatant', 'Добавить участника', 'primary'))}</div>
-  <div class="note-strip">${icon('journal')}<p>Изменения боя сохраняются сразу. Завершение добавит запись в хронику кампании.</p>${button('new-event', 'Записать событие', 'text-button')}</div>`;
-}
+function combatPage() { return screens.combatPage(active()); }
+function soundPage() { return screens.soundPage(active(), mixer); }
 function render() {
+  if (mixer.campaignId !== (active()?.id || null)) { selected = ''; query = ''; filter = ''; tagFilter = ''; pinnedOnly = false; }
+  mixer.setCampaign(active());
   const c = active();
   if (!c && view !== 'campaigns' && view !== 'help') view = 'campaigns';
-  const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
-  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + ' Данные и установка', 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Прототип 0.1</span></footer></div>`;
+  const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, sound: soundPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
+  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + ' Данные и установка', 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.2</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
 }
 function helpPage() {
-  return `${sectionHead('ВАША МАСТЕРСКАЯ', 'Данные и установка', 'Кампании остаются на этом устройстве.')}<div class="overview-grid"><section class="panel"><h2>Работа без интернета</h2><p>Откройте приложение с интернетом и дождитесь сообщения «Готово к работе без сети». После этого заметки, поиск, сессии и бой доступны автономно.</p><p><strong>${offlineReady ? '✓ Приложение готово к работе без сети' : 'Офлайн-подготовка ещё не завершена'}</strong></p>${button('install', 'Установить приложение', 'primary')}<p class="muted">В Chrome или Edge используйте значок установки в адресной строке. Если установка недоступна, работайте в обычной вкладке браузера.</p></section><section class="panel"><h2>Резервная копия</h2><p>Сохраните кампанию в файл после игры. Очистка данных сайта удаляет локальные кампании. Файл экспорта храните отдельно.</p><p>Импорт добавляет независимую копию. Изменения между устройствами автоматически не объединяются.</p><div class="actions">${active() ? button('export', icon('download') + ' Экспорт кампании', 'primary') : ''}${button('import', icon('upload') + ' Импорт', 'secondary')}</div><hr><p class="muted" id="persistence-status">Можно попросить браузер защитить хранилище от автоматической очистки.</p>${button('persist-storage', 'Защитить локальные данные', 'secondary')}</section></div><section class="panel"><h2>Быстрее с клавиатуры</h2><p><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> — поиск в базе знаний открытой кампании. <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> — сохранить открытый редактор. <kbd>Esc</kbd> — закрыть его; при несохранённых изменениях появится вопрос.</p></section><section class="panel"><h2>Правила и границы прототипа</h2><p>Целевая система — D&D 5.5e (правила 2024 года). Полного справочника правил в прототипе пока нет. Инициатива и состояния задаются вручную; сопротивления, спасброски и эффекты концентрации решает мастер.</p><p>Тексты записей сохраняются кнопкой «Сохранить». Действия боя сохраняются автоматически. До закрытия редактора можно скопировать свой текст, если запись не удалась.</p></section>`;
+  return `${sectionHead('ВАША МАСТЕРСКАЯ', 'Данные и установка', 'Кампании остаются на этом устройстве.')}<div class="overview-grid"><section class="panel"><h2>Работа без интернета</h2><p>Откройте приложение с интернетом и дождитесь сообщения «Готово к работе без сети». После этого заметки, поиск, сессии и бой доступны автономно.</p><p><strong>${offlineReady ? '✓ Приложение готово к работе без сети' : 'Офлайн-подготовка ещё не завершена'}</strong></p>${button('install', 'Установить приложение', 'primary')}<p class="muted">В Chrome или Edge используйте значок установки в адресной строке. Если установка недоступна, работайте в обычной вкладке браузера.</p></section><section class="panel"><h2>Резервная копия</h2><p>Сохраните кампанию в файл после игры. Очистка данных сайта удаляет локальные кампании. Файл экспорта храните отдельно. В него входят загруженные музыка и звуки.</p><p>Импорт добавляет независимую копию. Изменения между устройствами автоматически не объединяются.</p><div class="actions">${active() ? button('export', icon('download') + ' Экспорт кампании', 'primary') : ''}${button('import', icon('upload') + ' Импорт', 'secondary')}</div><hr><p class="muted" id="persistence-status">Можно попросить браузер защитить хранилище от автоматической очистки.</p>${button('persist-storage', 'Защитить локальные данные', 'secondary')}</section></div><section class="panel"><h2>Быстрее с клавиатуры</h2><p><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> — поиск в базе знаний открытой кампании. <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> — сохранить открытый редактор. <kbd>Esc</kbd> — закрыть его; при несохранённых изменениях появится вопрос.</p></section><section class="panel"><h2>Правила и границы прототипа</h2><p>Целевая система — D&D 5.5e (правила 2024 года). Полного справочника правил в прототипе пока нет. Инициативу можно бросить кнопкой d20. Эффекты — напоминания до начала указанного раунда; сопротивления, спасброски и эффекты концентрации решает мастер.</p><p>Тексты записей сохраняются кнопкой «Сохранить». Действия боя сохраняются автоматически. До закрытия редактора можно скопировать свой текст, если запись не удалась.</p></section>`;
 }
 function field(label, name, value = '', options = {}) {
   const attrs = `name="${name}" ${options.required ? 'required' : ''} ${options.type === 'number' ? `min="${options.min ?? 0}" max="${options.max ?? 100000}" step="1"` : ''}`;
@@ -126,21 +111,21 @@ function openDialog(title, content, onSubmit, { saveLabel = 'Сохранить'
   const form = $('#edit-form');
   form.addEventListener('input', () => { dirty = true; });
   form.addEventListener('submit', async event => {
-    event.preventDefault(); if (busy) return;
-    const submit = form.querySelector('[type=submit]'); submit.disabled = true;
+    event.preventDefault(); if (busy || submitting) return;
+    const submit = form.querySelector('[type=submit]'); submit.disabled = true; submitting = true;
     try { await onSubmit(new FormData(form)); dirty = false; dialog.close(); render(); toast('Сохранено на устройстве'); }
     catch (error) { failure(error); }
-    finally { submit.disabled = false; }
+    finally { submit.disabled = false; submitting = false; }
   });
   dialog.showModal();
 }
 function closeDialog() {
-  if (busy) return;
+  if (busy || submitting) return;
   if (dirty && !confirm('Закрыть без сохранения изменений?')) return;
   dirty = false; $('#editor').close();
 }
 $('#editor').addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
-window.addEventListener('beforeunload', event => { if (dirty || busy) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (dirty || busy || submitting) { event.preventDefault(); event.returnValue = ''; } });
 function campaignEditor(existing = null) {
   openDialog(existing ? 'Настройки кампании' : 'Новая история', field('Название кампании', 'name', existing?.name, { required: true }) + field('О чём эта история?', 'summary', existing?.summary, { area: true, rows: 4 }) + '<p class="muted tiny">D&D 5.5e · Локальная кампания · Без синхронизации</p>', async data => {
     const name = data.get('name').trim(); if (!name) throw new Error('Введите название кампании.');
@@ -157,9 +142,9 @@ function entryEditor(id, type = 'note') {
     ...active().sessions.filter(x => x.links.includes(e.id)).map(x => button('follow-session', esc(`Сессия: ${x.name}`), 'backlink-button', x.id)),
     ...active().events.filter(x => x.links.includes(e.id)).map(x => button('follow-event', esc(`Событие: ${x.text.slice(0, 100)}`), 'backlink-button', x.id)),
   ] : [];
-  openDialog(e ? 'Запись базы знаний' : 'Новая запись', field('Название', 'name', initial.name, { required: true }) + `<div class="form-grid">${selectField('Тип', 'type', TYPES, initial.type)}${selectField('Статус зацепки', 'status', HOOKS, initial.status)}</div>` + field('Текст', 'text', initial.text, { area: true, rows: 8 }) + field('Теги через запятую', 'tags', initial.tags.join(', '), { maxLength: 1000 }) + linksField(initial.links, initial.id) + (backlinks.length ? `<section class="backlinks"><h3>Где упоминается</h3>${backlinks.join('')}</section>` : ''), async data => {
+  openDialog(e ? 'Запись базы знаний' : 'Новая запись', field('Название', 'name', initial.name, { required: true }) + `<div class="form-grid">${selectField('Тип', 'type', TYPES, initial.type)}${selectField('Статус зацепки', 'status', HOOKS, initial.status)}</div>` + `<details ${['npc','monster'].includes(initial.type) ? 'open' : ''}><summary>Характеристики для боя (персонажи и существа)</summary><div class="form-grid">${field('Класс доспеха','ac',initial.stats.ac,{type:'number',max:100,required:true})}${field('Максимум HP','maxHp',initial.stats.maxHp,{type:'number',min:1,required:true})}${field('Бонус инициативы','initiativeBonus',initial.stats.initiativeBonus,{type:'number',min:-100,max:100,required:true})}${selectField('Сторона','role',ROLES,initial.stats.role)}${field('Скорость','speed',initial.stats.speed,{maxLength:100})}</div></details>` + field('Текст', 'text', initial.text, { area: true, rows: 8 }) + field('Теги через запятую', 'tags', initial.tags.join(', '), { maxLength: 1000 }) + linksField(initial.links, initial.id) + (backlinks.length ? `<section class="backlinks"><h3>Где упоминается</h3>${backlinks.join('')}</section>` : ''), async data => {
     const next = structuredClone(active());
-    const updated = { ...initial, name: data.get('name').trim(), type: data.get('type'), status: data.get('status'), text: data.get('text'), tags: [...new Set(data.get('tags').split(',').map(s => s.trim()).filter(Boolean))], links: data.getAll('links'), updatedAt: now() };
+    const updated = { ...initial, stats: {ac:Number(data.get('ac')),maxHp:Number(data.get('maxHp')),initiativeBonus:Number(data.get('initiativeBonus')),role:data.get('role'),speed:data.get('speed')}, name: data.get('name').trim(), type: data.get('type'), status: data.get('status'), text: data.get('text'), tags: [...new Set(data.get('tags').split(',').map(s => s.trim()).filter(Boolean))], links: data.getAll('links'), updatedAt: now() };
     next.entries = e ? next.entries.map(x => x.id === e.id ? updated : x) : [...next.entries, updated];
     await persist(next);
   }, { after: e ? button('delete-entry', 'Удалить запись', 'danger-text', e.id) : '' });
@@ -181,8 +166,8 @@ function eventEditor() {
 }
 function combatantEditor(id) {
   const c = active().battle.combatants.find(c => c.id === id);
-  openDialog(c ? 'Участник боя' : 'Добавить участника', field('Имя', 'name', c?.name || '', { required: true }) + `<div class="form-grid">${field('Максимум HP', 'maxHp', c?.maxHp || 10, { type: 'number', min: 1, required: true })}${field('Инициатива', 'initiative', c?.initiative || 0, { type: 'number', min: -1000, max: 1000, required: true })}${c ? field('Текущие HP', 'hp', c.hp, { type: 'number', required: true }) + field('Временные HP', 'tempHp', c.tempHp, { type: 'number', required: true }) : ''}</div>` + field('Состояния и заметки', 'conditions', c?.conditions || '', { maxLength: 1000 }) + `<label class="checkbox"><input type="checkbox" name="concentration" ${c?.concentration ? 'checked' : ''}> Концентрация</label>`, async data => {
-    const values = { name: data.get('name').trim(), maxHp: Number(data.get('maxHp')), initiative: Number(data.get('initiative')), hp: Number(data.get(c ? 'hp' : 'maxHp')), tempHp: Number(data.get('tempHp') || 0), conditions: data.get('conditions'), concentration: data.has('concentration') };
+  openDialog(c ? 'Участник боя' : 'Добавить участника', field('Имя', 'name', c?.name || '', { required: true }) + `<div class="form-grid">${field('Максимум HP', 'maxHp', c?.maxHp || 10, { type: 'number', min: 1, required: true })}${field('Инициатива', 'initiative', c?.initiative || 0, { type: 'number', min: -1000, max: 1000, required: true })}${c ? field('Текущие HP', 'hp', c.hp, { type: 'number', required: true }) + field('Временные HP', 'tempHp', c.tempHp, { type: 'number', required: true }) : ''}</div>` + `<div class="form-grid">${field('Класс доспеха','ac',c?.ac ?? 10,{type:'number',max:100,required:true})}${field('Бонус инициативы','initiativeBonus',c?.initiativeBonus ?? 0,{type:'number',min:-100,max:100,required:true})}${selectField('Сторона','role',ROLES,c?.role || 'enemy')}</div>` + field('Действия и заметки','notes',c?.notes || '',{area:true,rows:3}) + field('Состояния', 'conditions', c?.conditions || '', { maxLength: 1000 }) + `<label class="checkbox"><input type="checkbox" name="concentration" ${c?.concentration ? 'checked' : ''}> Концентрация</label>`, async data => {
+    const values = { ac:Number(data.get('ac')),initiativeBonus:Number(data.get('initiativeBonus')),role:data.get('role'),notes:data.get('notes'), name: data.get('name').trim(), maxHp: Number(data.get('maxHp')), initiative: Number(data.get('initiative')), hp: Number(data.get(c ? 'hp' : 'maxHp')), tempHp: Number(data.get('tempHp') || 0), conditions: data.get('conditions'), concentration: data.has('concentration') };
     if (values.hp > values.maxHp) throw new Error('Текущие HP не могут быть больше максимальных.');
     const next = structuredClone(active());
     next.battle = changeBattle(next.battle, c ? { type: 'edit', id, values } : { type: 'add', combatant: { ...createCombatant(values.name, values.maxHp, values.initiative), ...values } });
@@ -195,10 +180,23 @@ function healthEditor(id, type) {
     const next = structuredClone(active()); next.battle = changeBattle(next.battle, { type, id, amount: Number(data.get('amount')) }); await persist(next);
   }, { saveLabel: 'Применить' });
 }
+function soundEditor(id) {
+  const track=active().soundboard.tracks.find(t=>t.id===id);
+  openDialog(track?'Настройки аудио':'Добавить аудио',field('Название','name',track?.name || '',{required:true})+selectField('Назначение','kind',SOUND_KINDS,track?.kind || 'music')+`<label class="checkbox"><input type="checkbox" name="loop" ${track?.loop !== false?'checked':''}>Повторять (для короткого эффекта выключите)</label>`+(!track?'<label class="field">Аудиофайл<input type="file" name="audio" accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac,.webm" required></label><p class="muted tiny">До 20 МБ на файл, 60 МБ на кампанию. Файл копируется на устройство.</p>':''),async data=>{
+    const next=structuredClone(active()), assets=[];
+    if(track) Object.assign(next.soundboard.tracks.find(t=>t.id===id),{name:data.get('name').trim(),kind:data.get('kind'),loop:data.has('loop')});
+    else {
+      const file=data.get('audio'),blob=await prepareAudio(file),assetId=uid();
+      next.soundboard.tracks.push({id:uid(),assetId,name:data.get('name').trim(),fileName:file.name,kind:data.get('kind'),mime:blob.type,bytes:blob.size,volume:0.7,loop:data.has('loop')});
+      assets.push({id:assetId,campaignId:next.id,blob});
+    }
+    await persist(next,false,{assets}); if(track) mixer.stop(track.id);
+  },{after:track?button('delete-sound','Удалить аудио','danger-text',id):''});
+}
 async function exportActive() {
   // Reload the committed record so another tab's latest changes are included.
-  const current = (await listCampaigns()).find(c => c.id === activeId);
-  const text = exportCampaign(current);
+  const {campaign: current, assets} = await loadCampaignBundle(activeId);
+  const text = exportCampaign(current, await encodeAssets(assets));
   const blob = new Blob([text], { type: 'application/json' });
   const url = URL.createObjectURL(blob); const a = document.createElement('a');
   a.href = url; a.download = `${current.name.replace(/[^\p{L}\p{N}_-]/gu, '-').slice(0, 60)}-${now().slice(0, 10)}.dmw.json`;
@@ -225,7 +223,10 @@ async function handleAction(el) {
     case 'new-npc': entryEditor(null, 'npc'); break;
     case 'new-location': entryEditor(null, 'location'); break;
     case 'new-note': entryEditor(null, 'note'); break;
-    case 'entry': entryEditor(id); break;
+    case 'entry': selected = id; view = 'knowledge'; render(); break;
+    case 'edit-entry': entryEditor(id); break;
+    case 'pin-entry': await mutate(c => { const e = c.entries.find(e => e.id === id); e.pinned = !e.pinned; }); break;
+    case 'jump-event': view = 'journal'; render(); document.getElementById(`event-${id}`)?.scrollIntoView({block:'center'}); break;
     case 'follow-entry': case 'follow-session': case 'follow-event':
       closeDialog(); if ($('#editor').open) return;
       if (action === 'follow-entry') entryEditor(id);
@@ -241,7 +242,16 @@ async function handleAction(el) {
     case 'new-event': eventEditor(); break;
     case 'new-combatant': combatantEditor(); break;
     case 'edit-combatant': combatantEditor(id); break;
-    case 'damage': case 'heal': healthEditor(id, action); break;
+    case 'damage': case 'heal': {
+      const input = document.querySelector(`[data-hp-input="${id}"]`);
+      if (!input?.value) { healthEditor(id, action); break; }
+      if (!input.checkValidity()) { input.reportValidity(); break; }
+      const amount = Math.floor(Number(input.value) * (action === 'damage' ? Number(document.querySelector(`[data-damage-scale="${id}"]`).value) : 1));
+      const concentration = active().battle.combatants.find(p => p.id === id).concentration;
+      await mutate(c => { c.battle = changeBattle(c.battle, {type:action,id,amount}); });
+      if (concentration && action === 'damage' && amount > 0) toast('Получен урон: проверьте концентрацию участника.');
+      break;
+    }
     case 'remove-combatant':
       await mutate(c => { c.battle = changeBattle(c.battle, { type: 'remove', id }); }); dirty = false; $('#editor').close(); break;
     case 'start-battle':
@@ -258,6 +268,39 @@ async function handleAction(el) {
         // A completed battle is a boundary: do not undo across its journal entry.
         c.battle = changeBattle(c.battle, { type: 'clear' }); c.battle.history = [];
       }); break;
+    case 'go-sound': view = 'sound'; render(); break;
+    case 'combat-library': view = 'knowledge'; filter = ''; query = ''; render(); toast('Откройте персонажа или существо и нажмите «Добавить в бой».'); break;
+    case 'entry-to-combat': await mutate(c => { c.battle = changeBattle(c.battle,{type:'add',combatant:fromEntry(c.entries.find(e=>e.id===id))}); }); toast('Участник добавлен в бой'); break;
+    case 'roll-one': case 'roll-enemies': await mutate(c => { c.battle = changeBattle(c.battle,{type:'roll',values:Object.fromEntries(c.battle.combatants.filter(p=>action==='roll-one'?p.id===id:p.role==='enemy').map(p=>[p.id,d20()+p.initiativeBonus]))}); }); break;
+    case 'sort-battle': await mutate(c=>{c.battle=changeBattle(c.battle,{type:'sort'});}); break;
+    case 'add-effect': openDialog('Эффект участника',field('Название','name','',{required:true}) + field('Раундов до напоминания (пусто — бессрочно)','rounds','',{type:'number',min:1,max:10000}), async data=>{await mutate(c=>{c.battle=changeBattle(c.battle,{type:'effect-add',id,name:data.get('name').trim(),rounds:data.get('rounds')===''?null:Number(data.get('rounds'))});});}); break;
+    case 'remove-effect': await mutate(c=>{c.battle=changeBattle(c.battle,{type:'effect-remove',id,effectId:el.dataset.effect});}); break;
+    case 'save-encounter':
+      if (!active().battle.combatants.length) return toast('Сначала добавьте участников.');
+      openDialog('Заготовка встречи',field('Название','name','',{required:true}),async data=>{await mutate(c=>c.encounters.push(createEncounter(data.get('name'),c.battle)));}); break;
+    case 'load-encounter':
+      if (active().battle.started) throw new Error('Завершите текущий бой перед загрузкой заготовки.');
+      if (active().battle.combatants.length && !confirm('Заменить текущий состав встречи? Действие можно отменить.')) return;
+      await mutate(c=>{c.battle=changeBattle(c.battle,{type:'load',combatants:c.encounters.find(e=>e.id===id).combatants});}); break;
+    case 'delete-encounter': if(confirm('Удалить заготовку встречи?')) await mutate(c=>{c.encounters=c.encounters.filter(e=>e.id!==id);}); break;
+    case 'new-sound': soundEditor(); break;
+    case 'edit-sound': soundEditor(id); break;
+    case 'play-sound': await mixer.toggle(active().soundboard.tracks.find(t=>t.id===id),activeId); break;
+    case 'stop-audio': mixer.stopAll(); break;
+    case 'play-mood': await mixer.playMood(active().soundboard.moods.find(m=>m.id===id),active()); break;
+    case 'save-mood': {
+      const layers = mixer.activeLayers().filter(l=>active().soundboard.tracks.find(t=>t.id===l.trackId).kind!=='effect');
+      if(!layers.length) return toast('Сначала включите музыку или атмосферу.');
+      openDialog('Сохранить звуковую сцену',field('Название','name','',{required:true}),async data=>{await mutate(c=>c.soundboard.moods.push({id:uid(),name:data.get('name').trim(),layers}));}); break;
+    }
+    case 'delete-mood': if(confirm('Удалить звуковую сцену?')) await mutate(c=>{c.soundboard.moods=c.soundboard.moods.filter(m=>m.id!==id);}); break;
+    case 'delete-sound': {
+      if(!confirm('Удалить аудиофайл и его ссылки в звуковых сценах?')) return;
+      const next=structuredClone(active()), track=next.soundboard.tracks.find(t=>t.id===id);
+      next.soundboard.tracks=next.soundboard.tracks.filter(t=>t.id!==id);
+      next.soundboard.moods=next.soundboard.moods.map(m=>({...m,layers:m.layers.filter(l=>l.trackId!==id)})).filter(m=>m.layers.length);
+      await persist(next,false,{deleteAssets:[track.assetId]}); mixer.stop(id); dirty=false; $('#editor').close(); render(); break;
+    }
     case 'close': closeDialog(); break;
     case 'export': await exportActive(); break;
     case 'import': $('#import-file').click(); break;
@@ -272,27 +315,43 @@ async function handleAction(el) {
 }
 document.addEventListener('click', event => {
   const el = event.target.closest('[data-action]'); if (!el) return;
-  event.preventDefault(); if (busy) return;
+  event.preventDefault(); if (busy || submitting) return;
   handleAction(el).catch(failure);
 });
 document.addEventListener('keydown', event => {
-  if (!(event.ctrlKey || event.metaKey) || busy) return;
+  if(busy) return;
+  if(view==='combat' && !$('#editor').open && !event.target.closest('input,textarea,select,[contenteditable]') && ['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault(); handleAction({dataset:{action:event.key==='ArrowRight'?'next-turn':'previous-turn'}}).catch(failure);}
+  if (!(event.ctrlKey || event.metaKey)) return;
   if (event.key === 'Enter' && $('#editor').open) { event.preventDefault(); $('#edit-form').requestSubmit(); }
   if (event.key.toLowerCase() === 'k' && active() && !$('#editor').open) {
     event.preventDefault(); view = 'knowledge'; render(); $('#search').focus();
   }
 });
 document.addEventListener('input', event => {
+  if (event.target.dataset.volume) {
+    const id=event.target.dataset.volume, value=Number(event.target.value)/100;
+    if(id==='master') mixer.setMaster(value); else mixer.setVolume(id,value);
+    event.target.nextElementSibling.value = Math.round(value*100)+'%';
+  }
   if (event.target.id === 'search') { query = event.target.value; $('#entries').innerHTML = entriesList(); }
 });
 document.addEventListener('change', event => {
-  if (event.target.id === 'type-filter') { filter = event.target.value; $('#entries').innerHTML = entriesList(); }
+  const el=event.target;
+  if(el.id==='type-filter') filter=el.value;
+  if(el.id==='tag-filter') tagFilter=el.value;
+  if(el.id==='entry-sort') sort=el.value;
+  if(el.id==='pinned-filter') pinnedOnly=el.checked;
+  if(['type-filter','tag-filter','entry-sort','pinned-filter'].includes(el.id)) $('#entries').innerHTML=entriesList();
+  if(el.dataset.volume) {
+    const id=el.dataset.volume,value=Number(el.value)/100;
+    mutate(c=>{if(id==='master') c.soundboard.masterVolume=value; else c.soundboard.tracks.find(t=>t.id===id).volume=value;}).catch(error=>{mixer.setCampaign(active()); for(const t of active().soundboard.tracks) mixer.setVolume(t.id,t.volume); render(); failure(error);});
+  }
 });
 $('#import-file').addEventListener('change', async event => {
   const file = event.target.files[0]; event.target.value = ''; if (!file) return;
   try {
-    if (file.size > MAX_IMPORT_BYTES) throw new Error('Файл больше 5 МБ.');
-    const c = importCampaign(await file.text()); await persist(c, true); activeId = c.id; view = 'overview'; render(); toast('Кампания импортирована как отдельная копия');
+    if (file.size > MAX_IMPORT_BYTES) throw new Error('Файл больше 100 МБ.');
+    const {campaign:c,assets} = importBundle(await file.text()); await persist(c, true, {assets}); activeId = c.id; view = 'overview'; render(); toast('Кампания импортирована как отдельная копия');
   } catch (error) { failure(error); }
 });
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; });

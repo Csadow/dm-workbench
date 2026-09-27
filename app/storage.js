@@ -1,18 +1,24 @@
-import { exportCampaign } from './backup.js';
-import { now } from './domain.js';
+import { validateDocument } from './backup.js';
+import { migrateCampaign, now } from './domain.js';
 let connection;
 export async function openDatabase() {
   if (connection) return connection;
-  connection = await new Promise((resolve, reject) => {
-    const request = indexedDB.open('dm-workbench', 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('campaigns', { keyPath: 'id' });
+  connection = new Promise((resolve, reject) => {
+    const request = indexedDB.open('dm-workbench', 2);
+    let blocked = false;
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('campaigns')) db.createObjectStore('campaigns', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('media')) db.createObjectStore('media', { keyPath: 'id' });
+    };
     request.onsuccess = () => {
+      if (blocked) { request.result.close(); return; }
       request.result.onversionchange = () => { request.result.close(); connection = null; };
       resolve(request.result);
     };
     request.onerror = () => reject(request.error);
-    request.onblocked = () => reject(new Error('Закройте другие вкладки приложения и попробуйте снова.'));
-  });
+    request.onblocked = () => { blocked = true; reject(new Error('Для обновления хранилища закройте другие вкладки приложения и повторите.')); };
+  }).catch(error => { connection = null; throw error; });
   return connection;
 }
 export async function listCampaigns() {
@@ -20,30 +26,89 @@ export async function listCampaigns() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('campaigns', 'readonly');
     const request = tx.objectStore('campaigns').getAll();
-    tx.oncomplete = () => resolve(request.result.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+    tx.oncomplete = () => {
+      try { resolve(request.result.map(migrateCampaign).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))); }
+      catch (error) { reject(error); }
+    };
     tx.onabort = () => reject(tx.error);
   });
 }
-// Compare-and-swap inside one read/write transaction also protects concurrent tabs.
-export async function saveCampaign(campaign, { insert = false } = {}) {
+// Campaign metadata and new/deleted audio are committed in the same transaction.
+export async function saveCampaign(campaign, { insert = false, assets = [], deleteAssets = [] } = {}) {
   const db = await openDatabase();
   const next = structuredClone(campaign);
   next.updatedAt = now(); next.revision += 1;
-  exportCampaign(next); // Every committed record must remain exportable and restorable.
+  validateDocument(next);
   return new Promise((resolve, reject) => {
-    const tx = db.transaction('campaigns', 'readwrite');
-    const store = tx.objectStore('campaigns');
-    let conflict;
+    const tx = db.transaction(['campaigns', 'media'], 'readwrite');
+    const store = tx.objectStore('campaigns'), media = tx.objectStore('media');
+    let reason, aborted = false;
+    function abort(message) { if (aborted) return; aborted = true; reason = new Error(message); tx.abort(); }
     const request = store.get(next.id);
     request.onsuccess = () => {
       const current = request.result;
       if ((insert && current) || (!insert && (!current || current.revision !== campaign.revision))) {
-        conflict = new Error('Кампания изменена в другой вкладке. Скопируйте несохранённый текст и обновите страницу.');
-        tx.abort(); return;
+        abort('Кампания изменена в другой вкладке. Скопируйте несохранённый текст и обновите страницу.'); return;
       }
-      store.put(next);
+      const references = new Map(next.soundboard.tracks.map(t => [t.assetId, t]));
+      const incoming = new Map(assets.map(a => [a.id, a]));
+      if (incoming.size !== assets.length || assets.some(a => !references.has(a.id) || a.campaignId !== next.id) || deleteAssets.some(id => references.has(id))) {
+        abort('Аудиофайлы не соответствуют кампании.'); return;
+      }
+      const previousIds = new Set((current?.soundboard?.tracks || []).map(t => t.assetId));
+      if (deleteAssets.some(id => !previousIds.has(id))) { abort('Нельзя удалить аудио другой кампании.'); return; }
+      let waiting = references.size;
+      function commit() {
+        try {
+          for (const asset of assets) media.put(asset);
+          for (const id of deleteAssets) media.delete(id);
+          store.put(next);
+        } catch (error) { reason = error; try { tx.abort(); } catch {} }
+      }
+      if (!waiting) { commit(); return; }
+      for (const [id, track] of references) {
+        const lookup = media.get(id);
+        lookup.onsuccess = () => {
+          const existing = lookup.result;
+          if (incoming.has(id) && existing) { abort('Этот аудиофайл уже существует.'); return; }
+          const asset = incoming.get(id) || existing;
+          if (!asset || asset.campaignId !== next.id || !(asset.blob instanceof Blob) || asset.blob.size !== track.bytes || asset.blob.type !== track.mime) {
+            abort('Не найден аудиофайл кампании. Восстановите полную резервную копию.'); return;
+          }
+          waiting -= 1; if (!waiting) commit();
+        };
+      }
     };
     tx.oncomplete = () => resolve(next);
-    tx.onabort = () => reject(conflict || tx.error || new Error('Не удалось сохранить изменения.'));
+    tx.onabort = () => reject(reason || tx.error || new Error('Не удалось сохранить изменения.'));
+  });
+}
+export async function getAsset(id, campaignId) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('media', 'readonly'), req = tx.objectStore('media').get(id);
+    tx.oncomplete = () => req.result?.campaignId === campaignId ? resolve(req.result) : reject(new Error('Аудиофайл не найден в этой кампании.'));
+    tx.onabort = () => reject(tx.error);
+  });
+}
+export async function loadCampaignBundle(id) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['campaigns', 'media'], 'readonly');
+    let campaign, error; const assets = [];
+    const req = tx.objectStore('campaigns').get(id);
+    req.onsuccess = () => {
+      try { campaign = migrateCampaign(req.result); validateDocument(campaign); }
+      catch (e) { error = e; tx.abort(); return; }
+      for (const track of campaign.soundboard.tracks) {
+        const media = tx.objectStore('media').get(track.assetId);
+        media.onsuccess = () => {
+          if (!media.result || media.result.campaignId !== id) { error = new Error('В копии отсутствует аудиофайл.'); tx.abort(); return; }
+          assets.push(media.result);
+        };
+      }
+    };
+    tx.oncomplete = () => resolve({ campaign, assets });
+    tx.onabort = () => reject(error || tx.error);
   });
 }
