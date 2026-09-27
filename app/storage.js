@@ -1,3 +1,4 @@
+const native = globalThis.dmw?.storage;
 import { defaultProfile, validateProfile } from './assistant.js';
 import { validateDocument } from './backup.js';
 import { migrateCampaign, now } from './domain.js';
@@ -24,6 +25,7 @@ export async function openDatabase() {
   return connection;
 }
 export async function listCampaigns() {
+  if(native)return native.listCampaigns();
   const db = await openDatabase();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('campaigns', 'readonly');
@@ -37,6 +39,7 @@ export async function listCampaigns() {
 }
 // Campaign metadata and new/deleted audio are committed in the same transaction.
 export async function saveCampaign(campaign, { insert = false, assets = [], deleteAssets = [] } = {}) {
+  if(native)return native.saveCampaign(campaign,{insert,deleteAssets,assets:await Promise.all(assets.map(async a=>({id:a.id,campaignId:a.campaignId,mime:a.blob.type,data:new Uint8Array(await a.blob.arrayBuffer())})))});
   const db = await openDatabase();
   const next = structuredClone(campaign);
   next.updatedAt = now(); next.revision += 1;
@@ -86,6 +89,7 @@ export async function saveCampaign(campaign, { insert = false, assets = [], dele
   });
 }
 export async function getAsset(id, campaignId) {
+  if(native){const a=await native.getAsset(id,campaignId);return {...a,blob:new Blob([a.data],{type:a.mime})};}
   const db = await openDatabase();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('media', 'readonly'), req = tx.objectStore('media').get(id);
@@ -94,6 +98,7 @@ export async function getAsset(id, campaignId) {
   });
 }
 export async function loadCampaignBundle(id) {
+  if(native){const b=await native.loadCampaignBundle(id);return {campaign:b.campaign,assets:b.assets.map(a=>({...a,blob:new Blob([a.data],{type:a.mime})}))};}
   const db = await openDatabase();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['campaigns', 'media'], 'readonly');
@@ -116,10 +121,12 @@ export async function loadCampaignBundle(id) {
 }
 
 export async function loadProfile() {
+  if(native)return native.loadProfile();
   const db=await openDatabase();
   return new Promise((resolve,reject)=>{const tx=db.transaction('preferences','readonly'),req=tx.objectStore('preferences').get('assistant');tx.oncomplete=()=>{try{resolve(validateProfile(req.result||defaultProfile()));}catch(e){reject(e);}};tx.onabort=()=>reject(tx.error);});
 }
 export async function saveProfile(profile) {
+  if(native)return native.saveProfile(profile);
   validateProfile(profile); const db=await openDatabase(),next=structuredClone(profile); next.revision++;
   return new Promise((resolve,reject)=>{
     const tx=db.transaction('preferences','readwrite'),store=tx.objectStore('preferences'),req=store.get('assistant'); let reason;

@@ -1,3 +1,4 @@
+import { isDesktop, nativeInfo, refreshNativeInfo, desktopPage } from './desktop.js';
 import { memoryKey, memoryState, readMemory, writeMemory, deleteMemory, rememberConversation, retryMemory } from './vault.js';
 import * as knowledge from './knowledge.js';
 import { noteFolder, validFolder, renameWikiLinks, entryMarkdown } from './markdown.js';
@@ -40,7 +41,7 @@ async function checkAI() {
   aiChecking=true; if(view==='assistant')render();
   try {const response=await fetch('./api/ai/status',{signal:AbortSignal.timeout(7000),cache:'no-store'});const data=await response.json();aiModels=data.models||[];aiConnectionError=data.error||(!aiModels.length?'В Ollama ещё нет локальной текстовой модели.':'');}
   catch{aiModels=[];aiConnectionError='Локальный сервер приложения недоступен. Запустите node scripts/start-local.mjs.';}
-  finally{if(activeId)await readMemory(activeId).catch(()=>{});aiChecking=false;if(view==='assistant')render();}
+  finally{if(isDesktop)await refreshNativeInfo();if(activeId)await readMemory(activeId).catch(()=>{});aiChecking=false;if(view==='assistant')render();}
 }
 function refreshAssistant(id) { if(activeId===id && view==='assistant')render(); }
 async function saveAnswer(id) {
@@ -121,6 +122,7 @@ async function persist(next, insert = false, options = {}) {
   try {
     const saved = await saveCampaign(next, { insert, ...options });
     campaigns = [saved, ...campaigns.filter(c => c.id !== saved.id)];
+    if(isDesktop){await refreshNativeInfo();if(nativeInfo.warning)toast(nativeInfo.warning,true);}
     return saved;
   } finally { busy = false; document.body.classList.remove('saving'); }
 }
@@ -173,10 +175,11 @@ function render() {
   if (!c && view !== 'campaigns' && view !== 'help') view = 'campaigns';
   document.body.classList.toggle('knowledge-mode',view==='knowledge');
   const page = { campaigns: campaignsPage, overview: overviewPage, knowledge: knowledgePage, sessions: sessionsPage, bestiary: () => bestiaryPage(catalog,bestiaryState,catalogError), assistant: () => assistantPage(c,profile,{...aiState(),models:aiModels,error:aiConnectionError,loading:aiChecking}), sound: soundPage, journal: journalPage, combat: combatPage, help: helpPage }[view];
-  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + ' Данные и установка', 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.4</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
+  $('#app').innerHTML = `<aside class="sidebar"><a href="#" class="brand" data-action="campaigns"><span class="brand-icon">${icon('dice')}</span><span>DM Workbench<small>МАСТЕРСКАЯ ИСТОРИЙ</small></span></a><button class="campaign-switch" data-action="campaigns">${icon('folder')}<span>${c ? esc(c.name) : 'Все кампании'}<small>${c ? 'Выбрать другую кампанию' : 'Ваши миры и приключения'}</small></span><span>⌄</span></button><div class="nav-label">${c ? 'КАМПАНИЯ' : 'МАСТЕРСКАЯ'}</div><nav aria-label="Основная навигация">${(c ? navItems : [['campaigns', 'folder', 'Мои кампании']]).map(([key, glyph, label]) => `<button data-action="nav" data-view="${key}" class="nav-item ${view === key ? 'selected' : ''}" ${view === key ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${key === 'knowledge' ? `<span class="nav-count">${c.entries.length}</span>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom">${c ? button('export', icon('download') + ' Сохранить в файл', 'nav-item') : ''}${button('help', icon('settings') + (isDesktop?' Хранилище':' Данные и установка'), 'nav-item')}<div class="local-status"><span class="dot"></span><div>Ваш мир — у вас<small id="offline-status">${isDesktop?'Файлы на компьютере':offlineReady ? 'Готово к работе без сети' : 'Данные хранятся локально'}</small></div></div></div></aside><div class="workspace"><header class="topbar"><span class="breadcrumb">Мастерская <span>/</span> ${c ? esc(c.name) : 'Кампании'}</span><span class="save-status"><span class="dot"></span> <span id="save-label">${navigator.onLine ? 'Локальное хранение' : 'Без интернета'}</span></span></header><main id="main" tabindex="-1">${page()}</main><footer>DM WORKBENCH <span>Создавайте истории, которые хочется помнить.</span><span>Версия 0.5</span></footer><div id="audio-dock-root">${screens.audioDock(c, mixer)}</div></div>`;
 }
 function helpPage() {
-  return `${sectionHead('ВАША МАСТЕРСКАЯ', 'Данные и установка', 'Кампании остаются на этом устройстве.')}<div class="overview-grid"><section class="panel"><h2>Работа без интернета</h2><p>Откройте приложение с интернетом и дождитесь сообщения «Готово к работе без сети». После этого заметки, поиск, сессии и бой доступны автономно.</p><p><strong>${offlineReady ? '✓ Приложение готово к работе без сети' : 'Офлайн-подготовка ещё не завершена'}</strong></p>${button('install', 'Установить приложение', 'primary')}<p class="muted">В Chrome или Edge используйте значок установки в адресной строке. Если установка недоступна, работайте в обычной вкладке браузера.</p></section><section class="panel"><h2>Резервная копия</h2><p>Сохраните кампанию в файл после игры. Очистка данных сайта удаляет локальные кампании. Файл экспорта храните отдельно. В него входят загруженные музыка и звуки.</p><p>Импорт добавляет независимую копию. Изменения между устройствами автоматически не объединяются.</p><div class="actions">${active() ? button('export', icon('download') + ' Экспорт кампании', 'primary') : ''}${button('import', icon('upload') + ' Импорт', 'secondary')}</div><hr><p class="muted" id="persistence-status">Можно попросить браузер защитить хранилище от автоматической очистки.</p>${button('persist-storage', 'Защитить локальные данные', 'secondary')}</section></div><section class="panel"><h2>Быстрее с клавиатуры</h2><p><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> — поиск в базе знаний открытой кампании. <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> — сохранить открытый редактор. <kbd>Esc</kbd> — закрыть его; при несохранённых изменениях появится вопрос.</p></section><section class="panel"><h2>Правила и границы прототипа</h2><p>Целевая система — D&D 5.5e (правила 2024 года). Полного справочника правил в прототипе пока нет. В «Бестиарии SRD» доступны 330 готовых существ с исходными английскими блоками характеристик. Инициативу можно бросить кнопкой d20. Эффекты — напоминания до начала указанного раунда; сопротивления, спасброски и эффекты концентрации решает мастер.</p><p>Тексты записей сохраняются кнопкой «Сохранить». Действия боя сохраняются автоматически. До закрытия редактора можно скопировать свой текст, если запись не удалась.</p></section>`;
+  if(isDesktop)return desktopPage();
+  return `${sectionHead('ВАША МАСТЕРСКАЯ', isDesktop?'Хранилище':'Данные и установка', 'Кампании остаются на этом устройстве.')}<div class="overview-grid"><section class="panel"><h2>Работа без интернета</h2><p>Откройте приложение с интернетом и дождитесь сообщения «Готово к работе без сети». После этого заметки, поиск, сессии и бой доступны автономно.</p><p><strong>${offlineReady ? '✓ Приложение готово к работе без сети' : 'Офлайн-подготовка ещё не завершена'}</strong></p>${button('install', 'Установить приложение', 'primary')}<p class="muted">В Chrome или Edge используйте значок установки в адресной строке. Если установка недоступна, работайте в обычной вкладке браузера.</p></section><section class="panel"><h2>Резервная копия</h2><p>Сохраните кампанию в файл после игры. Очистка данных сайта удаляет локальные кампании. Файл экспорта храните отдельно. В него входят загруженные музыка и звуки.</p><p>Импорт добавляет независимую копию. Изменения между устройствами автоматически не объединяются.</p><div class="actions">${active() ? button('export', icon('download') + ' Экспорт кампании', 'primary') : ''}${button('import', icon('upload') + ' Импорт', 'secondary')}</div><hr><p class="muted" id="persistence-status">Можно попросить браузер защитить хранилище от автоматической очистки.</p>${button('persist-storage', 'Защитить локальные данные', 'secondary')}</section></div><section class="panel"><h2>Быстрее с клавиатуры</h2><p><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>K</kbd> — поиск в базе знаний открытой кампании. <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> — сохранить открытый редактор. <kbd>Esc</kbd> — закрыть его; при несохранённых изменениях появится вопрос.</p></section><section class="panel"><h2>Правила и границы прототипа</h2><p>Целевая система — D&D 5.5e (правила 2024 года). Полного справочника правил в прототипе пока нет. В «Бестиарии SRD» доступны 330 готовых существ с исходными английскими блоками характеристик. Инициативу можно бросить кнопкой d20. Эффекты — напоминания до начала указанного раунда; сопротивления, спасброски и эффекты концентрации решает мастер.</p><p>Тексты записей сохраняются кнопкой «Сохранить». Действия боя сохраняются автоматически. До закрытия редактора можно скопировать свой текст, если запись не удалась.</p></section>`;
 }
 function field(label, name, value = '', options = {}) {
   const attrs = `name="${name}" ${options.required ? 'required' : ''} ${options.type === 'number' ? `min="${options.min ?? 0}" max="${options.max ?? 100000}" step="1"` : ''}`;
@@ -292,10 +295,10 @@ async function exportActive() {
 async function handleAction(el) {
   const action = el.dataset.action, id = el.dataset.id;
   switch (action) {
-    case 'nav': view = el.dataset.view; query = ''; filter = ''; render(); if(view==='bestiary'){await loadBestiary();if(view==='bestiary')render();}if(view==='assistant')await checkAI(); break;
+    case 'nav': view = el.dataset.view; query = ''; filter = ''; render(); if(view==='bestiary'){await loadBestiary();if(view==='bestiary')render();}if(view==='knowledge'&&isDesktop){campaigns=await listCampaigns();render();}if(view==='assistant')await checkAI(); break;
     case 'campaigns': view = 'campaigns'; activeId = null; campaigns = await listCampaigns(); render(); break;
     case 'open': activeId = id; view = 'overview'; render(); break;
-    case 'help': view = 'help'; render(); break;
+    case 'help': view = 'help'; if(isDesktop)await refreshNativeInfo(); render(); break;
     case 'go-combat': view = 'combat'; render(); break;
     case 'new-campaign': campaignEditor(); break;
     case 'campaign-settings': campaignEditor(active()); break;
@@ -445,6 +448,18 @@ async function handleAction(el) {
       next.soundboard.moods=next.soundboard.moods.map(m=>({...m,layers:m.layers.filter(l=>l.trackId!==id)})).filter(m=>m.layers.length);
       await persist(next,false,{deleteAssets:[track.assetId]}); mixer.stop(id); dirty=false; $('#editor').close(); render(); break;
     }
+    case 'reload': location.reload();break;
+    case 'native-open': await globalThis.dmw.openFolder();break;
+    case 'native-refresh': campaigns=await listCampaigns();await refreshNativeInfo();render();toast('Записи обновлены с диска');break;
+    case 'native-ai-start': await globalThis.dmw.startAI();await refreshNativeInfo();if(view==='assistant')await checkAI();else render();break;
+    case 'native-ai-folder': await globalThis.dmw.chooseAI();await refreshNativeInfo();if(view==='assistant')await checkAI();else render();break;
+    case 'native-ai-install': await globalThis.dmw.setupAI();await refreshNativeInfo();render();break;
+    case 'native-backup': {const path=await globalThis.dmw.backup();if(path)toast('Полная копия сохранена: '+path);break;}
+    case 'native-library': case 'native-restore': {
+      if(dirty||Object.keys(noteDrafts).length||[...aiStates.values()].some(s=>s.running||s.answer))throw new Error('Сначала сохраните черновики и завершите запросы ИИ.');
+      if(await globalThis.dmw[action==='native-library'?'chooseLibrary':'restore']())location.reload();break;
+    }
+    case 'native-memory-import': {const result=await globalThis.dmw.importLegacyMemory();toast(`Скопировано файлов памяти: ${result.copied}. Пропущено: ${result.skipped}.`);break;}
     case 'close': closeDialog(); break;
     case 'export': await exportActive(); break;
     case 'import': $('#import-file').click(); break;
@@ -510,7 +525,7 @@ $('#import-file').addEventListener('change', async event => {
   const file = event.target.files[0]; event.target.value = ''; if (!file) return;
   try {
     if (file.size > MAX_IMPORT_BYTES) throw new Error('Файл больше 100 МБ.');
-    const {campaign:c,assets} = importBundle(await file.text()); await persist(c, true, {assets}); activeId = c.id; view = 'overview'; render(); toast('Кампания импортирована как отдельная копия');
+    const content=await file.text(),{campaign:c,assets}=importBundle(content); await persist(c, true, {assets});if(isDesktop)await globalThis.dmw.linkImport(JSON.parse(content).campaign.id,c.id); activeId = c.id; view = 'overview'; render(); toast('Кампания импортирована как отдельная копия');
   } catch (error) { failure(error); }
 });
 $('#profile-file').addEventListener('change',async event=>{
@@ -525,11 +540,11 @@ $('#profile-file').addEventListener('change',async event=>{
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; });
 for (const name of ['online', 'offline']) window.addEventListener(name, () => { if ($('#save-label')) $('#save-label').textContent = navigator.onLine ? 'Локальное хранение' : 'Без интернета'; });
 async function boot() {
-  try { [campaigns,profile] = await Promise.all([listCampaigns(),loadProfile()]); render(); }
+  try { [campaigns,profile] = await Promise.all([listCampaigns(),loadProfile()]); if(isDesktop)await refreshNativeInfo();render(); }
   catch (error) {
-    $('#app').innerHTML = `<main class="loading"><h1>Не удалось открыть хранилище</h1><p>${esc(error.message)}</p><p>Разрешите хранение данных сайта в браузере и обновите страницу.</p><button onclick="location.reload()">Повторить</button></main>`; return;
+    $('#app').innerHTML = `<main class="loading"><h1>Не удалось открыть хранилище</h1><p>${esc(error.message)}</p><p>${isDesktop?'Проверьте доступ к папке хранилища и сообщение об ошибке.':'Разрешите хранение данных сайта в браузере и обновите страницу.'}</p><button data-action="reload">Повторить</button></main>`; return;
   }
-  if ('serviceWorker' in navigator) {
+  if (!isDesktop && 'serviceWorker' in navigator) {
     try {
       await navigator.serviceWorker.register('./sw.js'); await navigator.serviceWorker.ready;
       offlineReady = true;
@@ -538,3 +553,4 @@ async function boot() {
   }
 }
 boot();
+if(isDesktop)setInterval(async()=>{if(!['assistant','help'].includes(view))return;try{const previous=nativeInfo.aiProgress;await refreshNativeInfo();if(previous!==nativeInfo.aiProgress)render();}catch{}},3000);

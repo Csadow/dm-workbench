@@ -8,7 +8,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -22,3 +22,18 @@ jobs:
         env:
           CHROMIUM: google-chrome
         run: node scripts/browser-test.mjs
+      - name: Install desktop runtime
+        run: |
+          npm install --global pnpm@11.26.0
+          pnpm install --frozen-lockfile --ignore-scripts
+          node node_modules/electron/install.js
+      - name: Desktop and restart scenarios
+        env:
+          DMW_TEST_NO_SANDBOX: '1'
+        run: xvfb-run -a node scripts/test-desktop.mjs
+      - name: Package and verify standalone Linux application
+        env:
+          DMW_TEST_NO_SANDBOX: '1'
+        run: |
+          node scripts/package-desktop.mjs
+          DMW_TEST_BINARY="$PWD/dist/DM-Workbench-0.5.0-linux-x64/dm-workbench" xvfb-run -a node scripts/test-desktop.mjs
